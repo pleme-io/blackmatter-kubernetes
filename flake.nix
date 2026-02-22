@@ -71,6 +71,7 @@
     # ── NixOS modules (Linux-only) ──────────────────────────────────
     nixosModules.k3s = import ./module/nixos/k3s { inherit nixosHelpers; };
     nixosModules.kubectl = import ./module/nixos/kubectl;
+    nixosModules.fluxcd = import ./module/nixos/fluxcd { inherit nixosHelpers; };
 
     # ── Overlay ─────────────────────────────────────────────────────
     overlays.default = nixpkgs.lib.composeManyExtensions [

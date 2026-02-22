@@ -4,5 +4,6 @@
   imports = [
     (import ./k3s { inherit nixosHelpers; })
     ./kubectl
+    (import ./fluxcd { inherit nixosHelpers; })
   ];
 }

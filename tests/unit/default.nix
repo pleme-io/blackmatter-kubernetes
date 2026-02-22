@@ -279,4 +279,330 @@ in runTests [
     in matrixSize == lib.length (lib.attrNames distributions.matrix)
        && matrixSize == 16)
     "profile x distribution matrix should have 16 entries (8 profiles x 2 tracks)")
+
+  # ── FluxCD module tests ──────────────────────────────────────────────
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    fluxcdStubs = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = false; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evalFluxcd = config: (lib.evalModules {
+      modules = [ fluxcdMod config fluxcdStubs ];
+    }).config;
+    evalFluxcdFull = config: lib.evalModules {
+      modules = [ fluxcdMod config fluxcdStubs ];
+    };
+  in mkTest "fluxcd-option-exists"
+    (let evaluated = evalFluxcdFull {};
+     in evaluated.options ? services
+        && evaluated.options.services ? blackmatter
+        && evaluated.options.services.blackmatter ? fluxcd)
+    "services.blackmatter.fluxcd options should exist")
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    fluxcdStubs = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = false; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evalFluxcd = config: (lib.evalModules {
+      modules = [ fluxcdMod config fluxcdStubs ];
+    }).config;
+  in mkTest "fluxcd-disabled-by-default"
+    (!((evalFluxcd {}).services.blackmatter.fluxcd.enable))
+    "fluxcd should be disabled by default")
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    fluxcdStubs = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = false; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evalFluxcd = config: (lib.evalModules {
+      modules = [ fluxcdMod config fluxcdStubs ];
+    }).config;
+    cfg = (evalFluxcd {}).services.blackmatter.fluxcd;
+  in mkTest "fluxcd-defaults"
+    (cfg.source.branch == "main"
+     && cfg.source.interval == "1m0s"
+     && cfg.source.auth == "ssh"
+     && cfg.source.tokenUsername == "git"
+     && cfg.reconcile.interval == "2m0s"
+     && cfg.reconcile.prune == true
+     && !cfg.sops.enable)
+    "defaults should be: branch=main, auth=ssh, tokenUsername=git, intervals 1m/2m, prune=true, sops=off")
+
+  # ── FluxCD assertion tests (SSH auth) ───────────────────────────────
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    k3sOff = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = false; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evaluated = (lib.evalModules {
+      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
+        enable = true;
+        source.url = "ssh://git@github.com/test/repo";
+        source.sshKeyFile = "/run/secrets/test-key";
+      }; } k3sOff ];
+    }).config;
+    k3sAssertion = lib.findFirst (a: lib.hasInfix "k3s" a.message) null evaluated.assertions;
+  in mkTest "fluxcd-assertions-require-k3s"
+    (k3sAssertion != null && !k3sAssertion.assertion)
+    "should assert k3s is enabled (and fail when it's not)")
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    k3sOn = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = true; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evaluated = (lib.evalModules {
+      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
+        enable = true;
+        source.sshKeyFile = "/run/secrets/test-key";
+      }; } k3sOn ];
+    }).config;
+    urlAssertion = lib.findFirst (a: lib.hasInfix "url" a.message) null evaluated.assertions;
+  in mkTest "fluxcd-assertions-require-url"
+    (urlAssertion != null && !urlAssertion.assertion)
+    "should assert source.url is set (and fail when empty)")
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    k3sOn = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = true; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evaluated = (lib.evalModules {
+      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
+        enable = true;
+        source.url = "ssh://git@github.com/test/repo";
+        # sshKeyFile intentionally null
+      }; } k3sOn ];
+    }).config;
+    sshAssertion = lib.findFirst (a: lib.hasInfix "sshKeyFile" a.message) null evaluated.assertions;
+  in mkTest "fluxcd-assertions-require-ssh-key"
+    (sshAssertion != null && !sshAssertion.assertion)
+    "should assert sshKeyFile when auth=ssh (and fail when null)")
+
+  # ── FluxCD assertion tests (token auth) ─────────────────────────────
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    k3sOn = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = true; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evaluated = (lib.evalModules {
+      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
+        enable = true;
+        source.url = "https://github.com/test/repo";
+        source.auth = "token";
+        # tokenFile intentionally null
+      }; } k3sOn ];
+    }).config;
+    tokenAssertion = lib.findFirst (a: lib.hasInfix "tokenFile" a.message) null evaluated.assertions;
+  in mkTest "fluxcd-assertions-require-token-file"
+    (tokenAssertion != null && !tokenAssertion.assertion)
+    "should assert tokenFile when auth=token (and fail when null)")
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    k3sOn = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = true; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    # Token auth with tokenFile set — ssh assertion should NOT fire
+    evaluated = (lib.evalModules {
+      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
+        enable = true;
+        source.url = "https://github.com/test/repo";
+        source.auth = "token";
+        source.tokenFile = "/run/secrets/test-token";
+      }; } k3sOn ];
+    }).config;
+    sshAssertion = lib.findFirst (a: lib.hasInfix "sshKeyFile" a.message) null evaluated.assertions;
+  in mkTest "fluxcd-token-auth-no-ssh-assertion"
+    (sshAssertion == null || sshAssertion.assertion)
+    "ssh key assertion should pass (not fire) when auth=token")
+
+  # ── FluxCD SOPS assertion ───────────────────────────────────────────
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    k3sOn = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = true; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evaluated = (lib.evalModules {
+      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
+        enable = true;
+        source.url = "ssh://git@github.com/test/repo";
+        source.sshKeyFile = "/run/secrets/test-key";
+        sops.enable = true;
+      }; } k3sOn ];
+    }).config;
+    ageAssertion = lib.findFirst (a: lib.hasInfix "ageKeyFile" a.message) null evaluated.assertions;
+  in mkTest "fluxcd-assertions-require-age-key-when-sops"
+    (ageAssertion != null && !ageAssertion.assertion)
+    "should assert ageKeyFile when sops is enabled (and fail when null)")
+
+  # ── FluxCD config generation tests ──────────────────────────────────
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    k3sOn = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = true; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evaluated = (lib.evalModules {
+      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
+        enable = true;
+        source.url = "ssh://git@github.com/test/repo";
+        source.sshKeyFile = "/run/secrets/test-key";
+      }; } k3sOn ];
+    }).config;
+    manifests = evaluated.services.blackmatter.k3s.manifests;
+  in mkTest "fluxcd-manifests-written-when-enabled"
+    (manifests ? "gotk-components" && manifests ? "gotk-sync")
+    "should write gotk-components and gotk-sync manifests to k3s")
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    k3sOn = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = true; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evaluated = (lib.evalModules {
+      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
+        enable = true;
+        source.url = "ssh://git@github.com/test/repo";
+        source.sshKeyFile = "/run/secrets/test-key";
+      }; } k3sOn ];
+    }).config;
+    syncContent = evaluated.services.blackmatter.k3s.manifests."gotk-sync".content;
+  in mkTest "fluxcd-sync-manifest-contains-git-url"
+    (lib.hasInfix "ssh://git@github.com/test/repo" syncContent
+     && lib.hasInfix "GitRepository" syncContent
+     && lib.hasInfix "Kustomization" syncContent)
+    "sync manifest should contain the configured git URL and both CRDs")
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    k3sOn = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = true; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evaluated = (lib.evalModules {
+      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
+        enable = true;
+        source.url = "https://github.com/test/repo";
+        source.auth = "token";
+        source.tokenFile = "/run/secrets/test-token";
+      }; } k3sOn ];
+    }).config;
+    syncContent = evaluated.services.blackmatter.k3s.manifests."gotk-sync".content;
+  in mkTest "fluxcd-token-auth-sync-manifest"
+    (lib.hasInfix "https://github.com/test/repo" syncContent
+     && lib.hasInfix "GitRepository" syncContent)
+    "token auth sync manifest should contain HTTPS URL")
+
+  (let
+    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
+    k3sOn = {
+      options = {
+        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
+        services.blackmatter.k3s = {
+          enable = lib.mkOption { type = lib.types.bool; default = true; };
+          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
+        };
+        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
+      };
+    };
+    evaluated = (lib.evalModules {
+      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
+        enable = true;
+        source.url = "ssh://git@github.com/test/repo";
+        source.sshKeyFile = "/run/secrets/test-key";
+      }; } k3sOn ];
+    }).config;
+  in mkTest "fluxcd-bootstrap-service-created"
+    (evaluated.systemd.services ? fluxcd-bootstrap)
+    "should create fluxcd-bootstrap systemd service")
 ]
