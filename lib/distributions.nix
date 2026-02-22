@@ -2,8 +2,15 @@
 #
 # Tracks define supported Kubernetes versions. Each track pins a specific
 # k3s release and declares the K8s version, support status, and EOL date.
+#
+# Combined with profiles (lib/profiles.nix), each track × profile pair
+# defines a complete cluster configuration variant.
 { lib }:
-{
+let
+  profileDefs = import ./profiles.nix { inherit lib; };
+in {
+  # All available cluster profiles
+  inherit (profileDefs) profiles defaultProfile;
   tracks = {
     "1.34" = {
       kubernetesVersion = "1.34";
@@ -31,4 +38,18 @@
     kubectlRange = 1;      # kubectl +/-1 minor from API server
     controlPlaneSkew = 1;  # HA API servers within 1 minor of each other
   };
+
+  # Profile × track matrix — all valid combinations
+  matrix = lib.listToAttrs (lib.concatMap (trackName:
+    map (profileName: {
+      name = "${profileName}-${trackName}";
+      value = {
+        track = trackName;
+        profile = profileName;
+      };
+    }) (lib.attrNames profileDefs.profiles)
+  ) (lib.attrNames {
+    "1.34" = {};
+    "1.35" = {};
+  }));
 }

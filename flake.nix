@@ -54,6 +54,16 @@
     });
 
     k3sModule = self.nixosModules.k3s;
+
+    # Profile definitions (pure data)
+    profileDefs = import ./lib/profiles.nix { lib = nixpkgs.lib; };
+
+    # Map profile extraPackages names to overlay package names
+    resolveProfilePackages = pkgs: profileName: let
+      profile = profileDefs.profiles.${profileName};
+      resolve = name: pkgs.${"blackmatter-${name}"};
+    in [ (pkgs.blackmatter-k3s or pkgs.k3s) ] ++ map resolve profile.extraPackages;
+
   in {
     # ── Home-manager modules (cross-platform) ───────────────────────
     homeManagerModules.default = import ./module/home-manager;
@@ -186,7 +196,16 @@
         blackmatter-vegeta = testing.vegeta;
         blackmatter-hey = testing.hey;
         blackmatter-fortio = testing.fortio;
-      })
+
+        # ── Cluster profile package sets (Linux-only) ─────────────────
+        # Each profile bundles k3s + all extra tools it needs.
+        # e.g. blackmatter-k3s-profile-cilium-standard = buildEnv { k3s, cilium-cli, hubble }
+      } // (nixpkgs.lib.mapAttrs' (name: profile:
+        nixpkgs.lib.nameValuePair "blackmatter-k3s-profile-${name}" (final.buildEnv {
+          name = "k3s-profile-${name}";
+          paths = resolveProfilePackages final name;
+        })
+      ) profileDefs.profiles))
     ];
 
     # ── Packages ──────────────────────────────────────────────────────
@@ -310,7 +329,12 @@
       calico-kube-controllers = pkgs.blackmatter-calico-kube-controllers;
       calico-pod2daemon = pkgs.blackmatter-calico-pod2daemon;
       confd-calico = pkgs.blackmatter-confd-calico;
-    });
+    }
+    # Profile package sets (Linux-only — contain k3s + extra tools)
+    // nixpkgs.lib.optionalAttrs (builtins.elem system linuxSystems)
+      (nixpkgs.lib.mapAttrs' (name: _:
+        nixpkgs.lib.nameValuePair "profile-${name}" pkgs.${"blackmatter-k3s-profile-${name}"}
+      ) profileDefs.profiles));
 
     # ── Tests ───────────────────────────────────────────────────────
     # Unit tests: nix eval .#tests.x86_64-linux.unit
@@ -361,6 +385,54 @@
         k3sPackage = k3sPackageLatest;
         lib = nixpkgs.lib;
       };
+
+      # Profile integration tests (flannel-minimal is cheapest to test)
+      single-node-flannel-minimal = import ./tests/integration/single-node.nix {
+        inherit pkgs k3sModule k3sPackage;
+        lib = nixpkgs.lib;
+        profile = "flannel-minimal";
+      };
+      single-node-flannel-minimal-latest = import ./tests/integration/single-node.nix {
+        inherit pkgs k3sModule;
+        k3sPackage = k3sPackageLatest;
+        lib = nixpkgs.lib;
+        profile = "flannel-minimal";
+      };
+
+      # Profile evaluation checks — verify every profile × distribution evaluates
+      profile-eval = let
+        evalProfile = profileName: let
+          mod = k3sModule;
+          evaluated = nixpkgs.lib.evalModules {
+            modules = [
+              mod
+              {
+                config.services.blackmatter.k3s = {
+                  enable = true;
+                  profile = profileName;
+                };
+              }
+              {
+                options = {
+                  systemd.services = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.attrs; default = {}; };
+                  systemd.tmpfiles.rules = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.listOf nixpkgs.lib.types.str; default = []; };
+                  networking.firewall = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.attrs; default = {}; };
+                  boot.kernelModules = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.listOf nixpkgs.lib.types.str; default = []; };
+                  boot.kernel.sysctl = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.attrs; default = {}; };
+                  environment.systemPackages = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.listOf nixpkgs.lib.types.package; default = []; };
+                  environment.shellAliases = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.attrs; default = {}; };
+                  assertions = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.listOf nixpkgs.lib.types.attrs; default = []; };
+                };
+              }
+            ];
+          };
+        in evaluated.config.services.blackmatter.k3s.profile == profileName;
+        allPass = nixpkgs.lib.all (name: evalProfile name) (nixpkgs.lib.attrNames profileDefs.profiles);
+      in pkgs.runCommand "profile-eval-check" {} (
+        if allPass
+        then "echo 'All ${toString (nixpkgs.lib.length (nixpkgs.lib.attrNames profileDefs.profiles))} profiles evaluate successfully' > $out"
+        else builtins.throw "Profile evaluation failed"
+      );
     };
   };
 }

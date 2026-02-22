@@ -8,6 +8,7 @@
 
 let
   distributions = import ../../lib/distributions.nix { inherit lib; };
+  profiles = import ../../lib/profiles.nix { inherit lib; };
 
   # Evaluate the k3s module with given config
   evalModule = config: let
@@ -186,4 +187,96 @@ in runTests [
         in abs (kubectlVersion - k8sMinor) <= skew;
     in lib.all checkTrack (lib.attrValues distributions.tracks))
     "kubectl 1.35.0 should be within skew of all distribution tracks")
+
+  # ── Profile system tests ──────────────────────────────────────────────
+
+  (mkTest "profiles-exist"
+    (let names = lib.attrNames profiles.profiles;
+     in lib.length names == 8)
+    "should have exactly 8 profiles")
+
+  (mkTest "profiles-all-have-required-fields"
+    (let
+      requiredFields = [ "name" "description" "use" "cni" "disable" "extraFlags"
+                         "extraPackages" "firewallTCP" "firewallUDP"
+                         "trustedInterfaces" "kernelModules" "manifests" ];
+      checkProfile = _: p: lib.all (f: p ? ${f}) requiredFields;
+    in lib.all (name: checkProfile name profiles.profiles.${name})
+       (lib.attrNames profiles.profiles))
+    "all profiles should have all required fields")
+
+  (mkTest "profiles-no-coredns-disabled"
+    (lib.all (name:
+      let p = profiles.profiles.${name};
+      in !(lib.elem "coredns" p.disable))
+      (lib.attrNames profiles.profiles))
+    "no profile should disable coredns")
+
+  (mkTest "profiles-cilium-disable-kube-proxy"
+    (let
+      ciliumProfiles = lib.filterAttrs (_: p: p.cni == "cilium") profiles.profiles;
+    in lib.all (p:
+      lib.elem "--disable-kube-proxy" p.extraFlags
+    ) (lib.attrValues ciliumProfiles))
+    "all cilium profiles should set --disable-kube-proxy")
+
+  (mkTest "profiles-calico-cilium-disable-flannel"
+    (let
+      nonFlannelProfiles = lib.filterAttrs (_: p:
+        p.cni == "calico" || p.cni == "cilium"
+      ) profiles.profiles;
+    in lib.all (p:
+      lib.elem "--flannel-backend=none" p.extraFlags
+    ) (lib.attrValues nonFlannelProfiles))
+    "calico and cilium profiles should set --flannel-backend=none")
+
+  (mkTest "profiles-flannel-no-extra-cni-flags"
+    (let
+      flannelProfiles = lib.filterAttrs (_: p: p.cni == "flannel") profiles.profiles;
+    in lib.all (p:
+      !(lib.elem "--flannel-backend=none" p.extraFlags)
+    ) (lib.attrValues flannelProfiles))
+    "flannel profiles should not set --flannel-backend=none")
+
+  (mkTest "profiles-default-exists"
+    (profiles.profiles ? ${profiles.defaultProfile})
+    "default profile should be a valid profile name")
+
+  (mkTest "profiles-names-match-keys"
+    (lib.all (key:
+      profiles.profiles.${key}.name == key
+    ) (lib.attrNames profiles.profiles))
+    "profile name field should match the attrset key")
+
+  (mkTest "profiles-cni-valid"
+    (let validCNIs = [ "flannel" "calico" "cilium" ];
+     in lib.all (name:
+       lib.elem profiles.profiles.${name}.cni validCNIs
+     ) (lib.attrNames profiles.profiles))
+    "all profiles should use a valid CNI (flannel, calico, cilium)")
+
+  (mkTest "profiles-calico-has-calico-packages"
+    (let
+      calicoProfiles = lib.filterAttrs (_: p: p.cni == "calico") profiles.profiles;
+    in lib.all (p:
+      lib.elem "calico-cni-plugin" p.extraPackages
+    ) (lib.attrValues calicoProfiles))
+    "calico profiles should include calico-cni-plugin")
+
+  (mkTest "profiles-cilium-has-cilium-packages"
+    (let
+      ciliumProfiles = lib.filterAttrs (_: p: p.cni == "cilium") profiles.profiles;
+    in lib.all (p:
+      lib.elem "cilium-cli" p.extraPackages
+    ) (lib.attrValues ciliumProfiles))
+    "cilium profiles should include cilium-cli")
+
+  (mkTest "profiles-matrix-complete"
+    (let
+      trackNames = lib.attrNames distributions.tracks;
+      profileNames = lib.attrNames profiles.profiles;
+      matrixSize = (lib.length trackNames) * (lib.length profileNames);
+    in matrixSize == lib.length (lib.attrNames distributions.matrix)
+       && matrixSize == 16)
+    "profile x distribution matrix should have 16 entries (8 profiles x 2 tracks)")
 ]

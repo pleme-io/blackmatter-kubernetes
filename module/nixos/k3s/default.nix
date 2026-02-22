@@ -1,7 +1,11 @@
-# Generic NixOS k3s module — no profile/variant logic
+# NixOS k3s module with cluster profile support
 #
 # Provides services.blackmatter.k3s with comprehensive options for
 # running k3s as server or agent. Uses substrate nixos-service-helpers.
+#
+# Profile support: setting `profile` auto-configures disable flags,
+# extra flags, firewall, and kernel modules from a pre-canned profile.
+# All profile-set values use mkDefault — the user can still override.
 { nixosHelpers }:
 
 { config, lib, pkgs, ... }:
@@ -10,6 +14,13 @@ with lib;
 
 let
   cfg = config.services.blackmatter.k3s;
+
+  profileDefs = import ../../../lib/profiles.nix { inherit lib; };
+  profileNames = attrNames profileDefs.profiles;
+  activeProfile =
+    if cfg.profile != null
+    then profileDefs.profiles.${cfg.profile}
+    else null;
 
   disableFlags = map (comp: "--disable ${comp}") cfg.disable;
 
@@ -94,6 +105,19 @@ let
 in {
   options.services.blackmatter.k3s = {
     enable = mkEnableOption "k3s Kubernetes distribution";
+
+    profile = mkOption {
+      type = types.nullOr (types.enum profileNames);
+      default = null;
+      description = ''
+        Cluster profile — pre-canned configuration for CNI, ingress,
+        firewall, and kernel modules. When set, profile values become
+        defaults that can still be overridden individually.
+
+        Available profiles: ${concatStringsSep ", " profileNames}
+      '';
+      example = "cilium-standard";
+    };
 
     distribution = mkOption {
       type = types.enum [ "1.34" "1.35" ];
@@ -349,77 +373,94 @@ in {
     };
   };
 
-  config = mkIf cfg.enable {
-    # ── Assertions ────────────────────────────────────────────────────
-    assertions = [
-      {
-        assertion = cfg.role != "agent" || cfg.serverAddr != "";
-        message = "services.blackmatter.k3s: agent role requires serverAddr";
-      }
-      {
-        assertion = cfg.role != "agent" || (cfg.tokenFile != null || cfg.token != "");
-        message = "services.blackmatter.k3s: agent role requires token or tokenFile";
-      }
-    ];
-
-    # ── Systemd service ──────────────────────────────────────────────
-    systemd.services.k3s = {
-      description = "k3s - Lightweight Kubernetes";
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
-      wantedBy = [ "multi-user.target" ];
-
-      path = [ cfg.package ];
-
-      serviceConfig = {
-        Type = if cfg.role == "server" then "notify" else "exec";
-        ExecStart = "${cfg.package}/bin/k3s ${cfg.role} ${concatStringsSep " " flags}";
-        KillMode = "process";
-        Delegate = "yes";
-        Restart = "always";
-        RestartSec = 5;
-        LimitNOFILE = 1048576;
-        LimitNPROC = "infinity";
-        LimitCORE = "infinity";
-      }
-      // optionalAttrs (cfg.environmentFile != null) {
-        EnvironmentFile = cfg.environmentFile;
-      }
-      // optionalAttrs cfg.waitForDNS.enable {
-        ExecStartPre = dnsCheckScript;
-      }
-      // optionalAttrs cfg.nvidia.enable {
-        ExecStartPost = nvidiaPostStartScript;
+  config = mkIf cfg.enable (mkMerge [
+    # ── Profile defaults (mkDefault so user can override) ──────────────
+    (mkIf (activeProfile != null) {
+      services.blackmatter.k3s = {
+        disable = mkDefault activeProfile.disable;
+        extraFlags = mkDefault activeProfile.extraFlags;
+        firewall = {
+          extraTCPPorts = mkDefault activeProfile.firewallTCP;
+          extraUDPPorts = mkDefault activeProfile.firewallUDP;
+          trustedInterfaces = mkDefault activeProfile.trustedInterfaces;
+        };
+        kernel.extraModules = mkDefault activeProfile.kernelModules;
       };
-    };
+    })
 
-    # ── Pre-provisioned images ───────────────────────────────────────
-    systemd.tmpfiles.rules = (
-      map (manifest:
-        let name = manifest; content = cfg.manifests.${manifest}.content;
-        in "C ${cfg.dataDir}/server/manifests/${name}.yaml - - - - ${pkgs.writeText "${name}.yaml" content}"
-      ) (attrNames cfg.manifests)
-    ) ++ (
-      map (img: "C ${cfg.dataDir}/agent/images/${baseNameOf (toString img)} - - - - ${img}")
-        cfg.images
-    );
+    # ── Core configuration ─────────────────────────────────────────────
+    {
+      # ── Assertions ────────────────────────────────────────────────────
+      assertions = [
+        {
+          assertion = cfg.role != "agent" || cfg.serverAddr != "";
+          message = "services.blackmatter.k3s: agent role requires serverAddr";
+        }
+        {
+          assertion = cfg.role != "agent" || (cfg.tokenFile != null || cfg.token != "");
+          message = "services.blackmatter.k3s: agent role requires token or tokenFile";
+        }
+      ];
 
-    # ── Firewall ─────────────────────────────────────────────────────
-    networking.firewall = mkIf cfg.firewall.enable {
-      allowedTCPPorts =
-        optional (cfg.role == "server") cfg.firewall.apiServerPort
-        ++ [ 10250 ]  # kubelet
-        ++ cfg.firewall.extraTCPPorts;
+      # ── Systemd service ──────────────────────────────────────────────
+      systemd.services.k3s = {
+        description = "k3s - Lightweight Kubernetes";
+        after = [ "network-online.target" ];
+        wants = [ "network-online.target" ];
+        wantedBy = [ "multi-user.target" ];
 
-      allowedUDPPorts = cfg.firewall.extraUDPPorts;
-      trustedInterfaces = cfg.firewall.trustedInterfaces;
-    };
+        path = [ cfg.package ];
 
-    # ── Kernel configuration ─────────────────────────────────────────
-    boot.kernelModules = mkIf cfg.kernel.enable (
-      baseKernelModules ++ cfg.kernel.extraModules
-    );
+        serviceConfig = {
+          Type = if cfg.role == "server" then "notify" else "exec";
+          ExecStart = "${cfg.package}/bin/k3s ${cfg.role} ${concatStringsSep " " flags}";
+          KillMode = "process";
+          Delegate = "yes";
+          Restart = "always";
+          RestartSec = 5;
+          LimitNOFILE = 1048576;
+          LimitNPROC = "infinity";
+          LimitCORE = "infinity";
+        }
+        // optionalAttrs (cfg.environmentFile != null) {
+          EnvironmentFile = cfg.environmentFile;
+        }
+        // optionalAttrs cfg.waitForDNS.enable {
+          ExecStartPre = dnsCheckScript;
+        }
+        // optionalAttrs cfg.nvidia.enable {
+          ExecStartPost = nvidiaPostStartScript;
+        };
+      };
 
-    boot.kernel.sysctl = mkIf cfg.kernel.enable baseSysctl;
-  };
+      # ── Pre-provisioned images ───────────────────────────────────────
+      systemd.tmpfiles.rules = (
+        map (manifest:
+          let name = manifest; content = cfg.manifests.${manifest}.content;
+          in "C ${cfg.dataDir}/server/manifests/${name}.yaml - - - - ${pkgs.writeText "${name}.yaml" content}"
+        ) (attrNames cfg.manifests)
+      ) ++ (
+        map (img: "C ${cfg.dataDir}/agent/images/${baseNameOf (toString img)} - - - - ${img}")
+          cfg.images
+      );
+
+      # ── Firewall ─────────────────────────────────────────────────────
+      networking.firewall = mkIf cfg.firewall.enable {
+        allowedTCPPorts =
+          optional (cfg.role == "server") cfg.firewall.apiServerPort
+          ++ [ 10250 ]  # kubelet
+          ++ cfg.firewall.extraTCPPorts;
+
+        allowedUDPPorts = cfg.firewall.extraUDPPorts;
+        trustedInterfaces = cfg.firewall.trustedInterfaces;
+      };
+
+      # ── Kernel configuration ─────────────────────────────────────────
+      boot.kernelModules = mkIf cfg.kernel.enable (
+        baseKernelModules ++ cfg.kernel.extraModules
+      );
+
+      boot.kernel.sysctl = mkIf cfg.kernel.enable baseSysctl;
+    }
+  ]);
 }
