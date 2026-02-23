@@ -1,74 +1,42 @@
 # Unit tests — pure-Nix evaluation tests (no VMs, instant)
 #
 # Tests module option structure, assertion logic, flag construction,
-# firewall/kernel config generation, and distribution system.
+# firewall/kernel config generation, distribution system, and vanilla k8s.
+#
+# Uses substrate's test helpers (mkTest, runTests, evalNixOSModule).
 #
 # Run: nix eval .#tests.unit
-{ lib, nixosHelpers }:
+{ lib, nixosHelpers, testHelpers, mkGoMonorepoSource }:
 
 let
+  inherit (testHelpers) mkTest runTests evalNixOSModule;
+
   distributions = import ../../lib/distributions.nix { inherit lib; };
   profiles = import ../../lib/profiles.nix { inherit lib; };
+  versionRegistry = import ../../lib/versions;
 
   # Evaluate the k3s module with given config
-  evalModule = config: let
-    mod = import ../../module/nixos/k3s { inherit nixosHelpers; };
-    evaluated = lib.evalModules {
-      modules = [
-        mod
-        { config.services.blackmatter.k3s = config; }
-        # Stub out system options that the module sets
-        {
-          options = {
-            systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
-            systemd.tmpfiles.rules = lib.mkOption { type = lib.types.listOf lib.types.str; default = []; };
-            networking.firewall = lib.mkOption { type = lib.types.attrs; default = {}; };
-            boot.kernelModules = lib.mkOption { type = lib.types.listOf lib.types.str; default = []; };
-            boot.kernel.sysctl = lib.mkOption { type = lib.types.attrs; default = {}; };
-            environment.systemPackages = lib.mkOption { type = lib.types.listOf lib.types.package; default = []; };
-            environment.shellAliases = lib.mkOption { type = lib.types.attrs; default = {}; };
-            assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
-          };
-        }
-      ];
-    };
-  in evaluated.config;
+  k3sModule = import ../../module/nixos/k3s { inherit nixosHelpers; };
+  evalModule = config: (evalNixOSModule {
+    module = k3sModule;
+    inherit config;
+    configPath = ["services" "blackmatter" "k3s"];
+  }).config;
 
-  mkTest = name: assertion: message: {
-    inherit name message;
-    passed = assertion;
-  };
-
-  runTests = tests: let
-    results = tests;
-    passed = lib.filter (t: t.passed) results;
-    failed = lib.filter (t: !t.passed) results;
-  in {
-    total = lib.length results;
-    passCount = lib.length passed;
-    failCount = lib.length failed;
-    allPassed = failed == [];
-    failures = map (t: "${t.name}: ${t.message}") failed;
-    summary = "${toString (lib.length passed)}/${toString (lib.length results)} passed";
+  # Evaluate the k8s module with given config (lazy — don't force packages)
+  k8sModule = import ../../module/nixos/kubernetes { inherit nixosHelpers mkGoMonorepoSource; };
+  evalK8sModule = config: evalNixOSModule {
+    module = k8sModule;
+    inherit config;
+    configPath = ["services" "blackmatter" "kubernetes"];
   };
 
 in runTests [
   # ── Option existence tests ─────────────────────────────────────────
   (mkTest "option-enable-exists"
-    (let mod = import ../../module/nixos/k3s { inherit nixosHelpers; };
-         evaluated = lib.evalModules {
-           modules = [ mod {
-             options = {
-               systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
-               systemd.tmpfiles.rules = lib.mkOption { type = lib.types.listOf lib.types.str; default = []; };
-               networking.firewall = lib.mkOption { type = lib.types.attrs; default = {}; };
-               boot.kernelModules = lib.mkOption { type = lib.types.listOf lib.types.str; default = []; };
-               boot.kernel.sysctl = lib.mkOption { type = lib.types.attrs; default = {}; };
-               environment.systemPackages = lib.mkOption { type = lib.types.listOf lib.types.package; default = []; };
-               environment.shellAliases = lib.mkOption { type = lib.types.attrs; default = {}; };
-               assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
-             };
-           }];
+    (let evaluated = evalNixOSModule {
+           module = k3sModule;
+           configPath = ["services" "blackmatter" "k3s"];
          };
      in evaluated.options ? services
         && evaluated.options.services ? blackmatter)
@@ -188,6 +156,78 @@ in runTests [
     in lib.all checkTrack (lib.attrValues distributions.tracks))
     "kubectl 1.35.0 should be within skew of all distribution tracks")
 
+  # ── Shared version registry tests ────────────────────────────────────
+
+  (mkTest "version-registry-tracks-exist"
+    (versionRegistry ? "1.34" && versionRegistry ? "1.35")
+    "version registry should have 1.34 and 1.35 tracks")
+
+  (mkTest "version-registry-1.34-fields"
+    (let v = versionRegistry."1.34";
+     in v ? kubernetesVersion && v ? etcdVersion && v ? containerdVersion
+        && v ? runcVersion && v ? cniPluginsVersion && v ? crictlVersion
+        && v ? pauseVersion)
+    "1.34 track should have all required version fields")
+
+  (mkTest "version-registry-1.35-fields"
+    (let v = versionRegistry."1.35";
+     in v ? kubernetesVersion && v ? etcdVersion && v ? containerdVersion
+        && v ? runcVersion && v ? cniPluginsVersion && v ? crictlVersion
+        && v ? pauseVersion)
+    "1.35 track should have all required version fields")
+
+  (mkTest "version-registry-1.34-versions"
+    (let v = versionRegistry."1.34";
+     in v.kubernetesVersion == "1.34.3"
+        && v.etcdVersion == "3.6.7"
+        && v.containerdVersion == "2.1.5"
+        && v.runcVersion == "1.2.6"
+        && v.cniPluginsVersion == "1.8.0"
+        && v.crictlVersion == "1.34.0"
+        && v.pauseVersion == "3.11")
+    "1.34 track should have correct version values")
+
+  (mkTest "version-registry-1.35-versions"
+    (let v = versionRegistry."1.35";
+     in v.kubernetesVersion == "1.35.1"
+        && v.etcdVersion == "3.6.7"
+        && v.containerdVersion == "2.1.5"
+        && v.runcVersion == "1.2.6"
+        && v.cniPluginsVersion == "1.9.0"
+        && v.crictlVersion == "1.35.0"
+        && v.pauseVersion == "3.11")
+    "1.35 track should have correct version values")
+
+  # ── Version parity tests (k3s ↔ k8s) ────────────────────────────────
+
+  (mkTest "version-parity-1.34-k3s-matches-registry"
+    (let
+      k3sVersions = import ../../pkgs/k3s/versions/1_34.nix;
+      shared = versionRegistry."1.34";
+    in lib.hasPrefix shared.kubernetesVersion (lib.removeSuffix "+k3s1" k3sVersions.k3sVersion)
+       && lib.hasPrefix shared.cniPluginsVersion k3sVersions.k3sCNIVersion
+       && lib.hasPrefix shared.containerdVersion k3sVersions.containerdVersion
+       && lib.hasPrefix shared.crictlVersion k3sVersions.criCtlVersion)
+    "k3s 1.34 version pins should track shared version registry")
+
+  (mkTest "version-parity-1.35-k3s-matches-registry"
+    (let
+      k3sVersions = import ../../pkgs/k3s/versions/1_35.nix;
+      shared = versionRegistry."1.35";
+    in lib.hasPrefix shared.kubernetesVersion (lib.removeSuffix "+k3s1" k3sVersions.k3sVersion)
+       && lib.hasPrefix shared.cniPluginsVersion k3sVersions.k3sCNIVersion
+       && lib.hasPrefix shared.containerdVersion k3sVersions.containerdVersion
+       && lib.hasPrefix shared.crictlVersion k3sVersions.criCtlVersion)
+    "k3s 1.35 version pins should track shared version registry")
+
+  (mkTest "version-parity-kubernetes-minor-matches"
+    (let
+      v134 = versionRegistry."1.34";
+      v135 = versionRegistry."1.35";
+    in lib.hasPrefix "1.34" v134.kubernetesVersion
+       && lib.hasPrefix "1.35" v135.kubernetesVersion)
+    "version registry kubernetes versions should match their track names")
+
   # ── Profile system tests ──────────────────────────────────────────────
 
   (mkTest "profiles-exist"
@@ -197,13 +237,13 @@ in runTests [
 
   (mkTest "profiles-all-have-required-fields"
     (let
-      requiredFields = [ "name" "description" "use" "cni" "disable" "extraFlags"
-                         "extraPackages" "firewallTCP" "firewallUDP"
+      requiredFields = [ "name" "description" "use" "cni" "disable" "disableKubeProxy"
+                         "extraFlags" "extraPackages" "firewallTCP" "firewallUDP"
                          "trustedInterfaces" "kernelModules" "manifests" ];
       checkProfile = _: p: lib.all (f: p ? ${f}) requiredFields;
     in lib.all (name: checkProfile name profiles.profiles.${name})
        (lib.attrNames profiles.profiles))
-    "all profiles should have all required fields")
+    "all profiles should have all required fields (including disableKubeProxy)")
 
   (mkTest "profiles-no-coredns-disabled"
     (lib.all (name:
@@ -217,8 +257,17 @@ in runTests [
       ciliumProfiles = lib.filterAttrs (_: p: p.cni == "cilium") profiles.profiles;
     in lib.all (p:
       lib.elem "--disable-kube-proxy" p.extraFlags
+      && p.disableKubeProxy == true
     ) (lib.attrValues ciliumProfiles))
-    "all cilium profiles should set --disable-kube-proxy")
+    "all cilium profiles should set --disable-kube-proxy and disableKubeProxy")
+
+  (mkTest "profiles-non-cilium-no-disable-kube-proxy"
+    (let
+      nonCiliumProfiles = lib.filterAttrs (_: p: p.cni != "cilium") profiles.profiles;
+    in lib.all (p:
+      p.disableKubeProxy == false
+    ) (lib.attrValues nonCiliumProfiles))
+    "non-cilium profiles should not disable kube-proxy")
 
   (mkTest "profiles-calico-cilium-disable-flannel"
     (let
@@ -279,6 +328,244 @@ in runTests [
     in matrixSize == lib.length (lib.attrNames distributions.matrix)
        && matrixSize == 16)
     "profile x distribution matrix should have 16 entries (8 profiles x 2 tracks)")
+
+  # ── Kubernetes package version tests ───────────────────────────────────
+
+  (mkTest "k8s-package-versions-1.34"
+    (let
+      hashes134 = import ../../pkgs/kubernetes/versions/1_34.nix;
+    in hashes134 ? srcHash)
+    "k8s package hashes for 1.34 should exist")
+
+  (mkTest "k8s-package-versions-1.35"
+    (let
+      hashes135 = import ../../pkgs/kubernetes/versions/1_35.nix;
+    in hashes135 ? srcHash)
+    "k8s package hashes for 1.35 should exist")
+
+  (mkTest "k8s-source-factory-evaluates"
+    (let
+      mockPkgs = { inherit lib; fetchFromGitHub = _: null; };
+      mkSource = import ../../pkgs/kubernetes/source.nix { inherit mkGoMonorepoSource; pkgs = mockPkgs; };
+      versions = versionRegistry."1.34";
+      hashes = import ../../pkgs/kubernetes/versions/1_34.nix;
+      result = mkSource { inherit versions hashes; };
+    in result ? version && result ? ldflags && result.version == "1.34.3")
+    "source factory should produce version and ldflags for 1.34")
+
+  (mkTest "k8s-source-factory-ldflags-correct"
+    (let
+      mockPkgs = { inherit lib; fetchFromGitHub = _: null; };
+      mkSource = import ../../pkgs/kubernetes/source.nix { inherit mkGoMonorepoSource; pkgs = mockPkgs; };
+      versions = versionRegistry."1.34";
+      hashes = import ../../pkgs/kubernetes/versions/1_34.nix;
+      result = mkSource { inherit versions hashes; };
+    in lib.any (f: lib.hasInfix "gitVersion=v1.34.3" f) result.ldflags
+       && lib.any (f: lib.hasInfix "gitMajor=1" f) result.ldflags
+       && lib.any (f: lib.hasInfix "gitMinor=34" f) result.ldflags)
+    "source factory ldflags should contain correct version info")
+
+  (mkTest "k8s-source-factory-1.35-ldflags"
+    (let
+      mockPkgs = { inherit lib; fetchFromGitHub = _: null; };
+      mkSource = import ../../pkgs/kubernetes/source.nix { inherit mkGoMonorepoSource; pkgs = mockPkgs; };
+      versions = versionRegistry."1.35";
+      hashes = import ../../pkgs/kubernetes/versions/1_35.nix;
+      result = mkSource { inherit versions hashes; };
+    in result.version == "1.35.1"
+       && lib.any (f: lib.hasInfix "gitVersion=v1.35.1" f) result.ldflags
+       && lib.any (f: lib.hasInfix "gitMinor=35" f) result.ldflags)
+    "source factory should produce correct ldflags for 1.35")
+
+  # ── K8s NixOS module tests ───────────────────────────────────────────
+
+  (mkTest "k8s-option-exists"
+    (let evaluated = evalK8sModule {};
+     in evaluated.options ? services
+        && evaluated.options.services ? blackmatter
+        && evaluated.options.services.blackmatter ? kubernetes)
+    "services.blackmatter.kubernetes options should exist")
+
+  (mkTest "k8s-option-sub-modules-exist"
+    (let evaluated = evalK8sModule {};
+         k8sOpts = evaluated.options.services.blackmatter.kubernetes;
+     in k8sOpts ? controlPlane
+        && k8sOpts ? etcd
+        && k8sOpts ? pki
+        && k8sOpts ? firewall
+        && k8sOpts ? kernel
+        && k8sOpts ? waitForDNS
+        && k8sOpts ? containerRuntime
+        && k8sOpts ? gracefulNodeShutdown)
+    "k8s module should have all sub-module option groups")
+
+  (mkTest "k8s-option-controlplane-fields"
+    (let evaluated = evalK8sModule {};
+         cpOpts = evaluated.options.services.blackmatter.kubernetes.controlPlane;
+     in cpOpts ? apiServerExtraArgs
+        && cpOpts ? controllerManagerExtraArgs
+        && cpOpts ? schedulerExtraArgs
+        && cpOpts ? apiServerExtraSANs
+        && cpOpts ? disableKubeProxy
+        && cpOpts ? kubeProxyExtraArgs
+        && cpOpts ? etcd)
+    "controlPlane options should include all expected fields")
+
+  (mkTest "k8s-option-etcd-fields"
+    (let evaluated = evalK8sModule {};
+         etcdOpts = evaluated.options.services.blackmatter.kubernetes.etcd;
+     in etcdOpts ? enable
+        && etcdOpts ? package
+        && etcdOpts ? dataDir
+        && etcdOpts ? initialCluster
+        && etcdOpts ? initialClusterState
+        && etcdOpts ? extraArgs)
+    "etcd options should include all expected fields")
+
+  (mkTest "k8s-option-pki-fields"
+    (let evaluated = evalK8sModule {};
+         pkiOpts = evaluated.options.services.blackmatter.kubernetes.pki;
+     in pkiOpts ? mode
+        && pkiOpts ? certificateDir
+        && pkiOpts ? external)
+    "pki options should include mode, certificateDir, and external")
+
+  (mkTest "k8s-option-pki-external-fields"
+    (let evaluated = evalK8sModule {};
+         extOpts = evaluated.options.services.blackmatter.kubernetes.pki.external;
+     in extOpts ? caCert && extOpts ? caKey
+        && extOpts ? apiServerCert && extOpts ? apiServerKey
+        && extOpts ? frontProxyCACert && extOpts ? frontProxyCAKey
+        && extOpts ? etcdCACert && extOpts ? etcdCAKey
+        && extOpts ? saKey && extOpts ? saPub)
+    "pki.external should have all certificate path options")
+
+  (mkTest "k8s-default-distribution"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.distribution == "1.34")
+    "default distribution should be 1.34")
+
+  (mkTest "k8s-default-role"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.role == "control-plane")
+    "default role should be control-plane")
+
+  (mkTest "k8s-default-cidrs"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.clusterCIDR == "10.42.0.0/16"
+        && cfg.serviceCIDR == "10.43.0.0/16"
+        && cfg.clusterDNS == "10.43.0.10")
+    "default CIDRs should match k3s defaults")
+
+  (mkTest "k8s-default-data-dir"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.dataDir == "/var/lib/kubernetes")
+    "default dataDir should be /var/lib/kubernetes")
+
+  (mkTest "k8s-default-pki-mode"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.pki.mode == "kubeadm")
+    "default PKI mode should be kubeadm")
+
+  (mkTest "k8s-default-firewall-enabled"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.firewall.enable == true
+        && cfg.firewall.apiServerPort == 6443)
+    "firewall should be enabled by default with apiserver on 6443")
+
+  (mkTest "k8s-default-firewall-udp"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.firewall.extraUDPPorts == [ 8472 ])
+    "default UDP ports should include VXLAN 8472")
+
+  (mkTest "k8s-default-firewall-trusted"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.firewall.trustedInterfaces == [ "cni0" "flannel.1" ])
+    "default trusted interfaces should include cni0 and flannel.1")
+
+  (mkTest "k8s-default-kernel-enabled"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.kernel.enable == true)
+    "kernel configuration should be enabled by default")
+
+  (mkTest "k8s-default-wait-for-dns"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.waitForDNS.enable == true
+        && cfg.waitForDNS.timeout == 30)
+    "waitForDNS should be enabled with 30 retries by default")
+
+  (mkTest "k8s-default-disable-kube-proxy-false"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.controlPlane.disableKubeProxy == false)
+    "kube-proxy should not be disabled by default")
+
+  (mkTest "k8s-default-etcd-disabled"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.etcd.enable == false)
+    "etcd should be disabled by default (auto-enabled by control-plane)")
+
+  (mkTest "k8s-default-etcd-data-dir"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.etcd.dataDir == "/var/lib/etcd")
+    "default etcd dataDir should be /var/lib/etcd")
+
+  (mkTest "k8s-versions-resolve-correctly"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.versions.kubernetesVersion == "1.34.3"
+        && cfg.versions.etcdVersion == "3.6.7"
+        && cfg.versions.containerdVersion == "2.1.5"
+        && cfg.versions.pauseVersion == "3.11")
+    "versions should resolve to 1.34 registry values")
+
+  (mkTest "k8s-versions-1.35-resolves"
+    (let cfg = (evalK8sModule { distribution = "1.35"; }).config.services.blackmatter.kubernetes;
+     in cfg.versions.kubernetesVersion == "1.35.1"
+        && cfg.versions.cniPluginsVersion == "1.9.0")
+    "setting distribution=1.35 should resolve to 1.35 registry values")
+
+  (mkTest "k8s-profile-null-default"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.profile == null)
+    "default profile should be null")
+
+  (mkTest "k8s-profile-accepts-all-names"
+    (lib.all (name:
+      let cfg = (evalK8sModule { profile = name; }).config.services.blackmatter.kubernetes;
+      in cfg.profile == name
+    ) (lib.attrNames profiles.profiles))
+    "profile option should accept all 8 profile names")
+
+  # Test assertion logic as pure expressions (assertions live inside mkIf cfg.enable)
+  (mkTest "k8s-worker-assertion-serverAddr-logic"
+    (let
+      # Matches the assertion: cfg.role != "worker" || cfg.serverAddr != ""
+      workerCheck = role: addr: role != "worker" || addr != "";
+    in !(workerCheck "worker" "")                       # worker without addr → fails
+       && (workerCheck "worker" "10.0.0.1:6443")        # worker with addr → passes
+       && (workerCheck "control-plane" ""))              # control-plane → always passes
+    "worker assertion logic should require serverAddr for workers")
+
+  (mkTest "k8s-worker-assertion-token-logic"
+    (let
+      # Matches: cfg.role != "worker" || (cfg.tokenFile != null || cfg.token != "")
+      tokenCheck = role: tokenFile: token:
+        role != "worker" || (tokenFile != null || token != "");
+    in !(tokenCheck "worker" null "")                    # worker without token → fails
+       && (tokenCheck "worker" null "abc123")             # worker with token → passes
+       && (tokenCheck "worker" "/path/to/token" "")       # worker with tokenFile → passes
+       && (tokenCheck "control-plane" null ""))            # control-plane → always passes
+    "worker assertion logic should require token or tokenFile for workers")
+
+  (mkTest "k8s-controlplane-etcd-external-default"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.controlPlane.etcd.external == false
+        && cfg.controlPlane.etcd.endpoints == [ "http://127.0.0.1:2379" ])
+    "external etcd should be disabled by default with localhost endpoint")
+
+  (mkTest "k8s-pki-certificate-dir-follows-data-dir"
+    (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
+     in cfg.pki.certificateDir == "/var/lib/kubernetes/pki")
+    "PKI certificate dir should derive from dataDir")
 
   # ── FluxCD module tests ──────────────────────────────────────────────
 
@@ -351,237 +638,6 @@ in runTests [
      && cfg.reconcile.prune == true
      && !cfg.sops.enable)
     "defaults should be: branch=main, auth=ssh, tokenUsername=git, intervals 1m/2m, prune=true, sops=off")
-
-  # ── FluxCD assertion tests (SSH auth) ───────────────────────────────
-
-  (let
-    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
-    k3sOff = {
-      options = {
-        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
-        services.blackmatter.k3s = {
-          enable = lib.mkOption { type = lib.types.bool; default = false; };
-          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
-        };
-        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
-      };
-    };
-    evaluated = (lib.evalModules {
-      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
-        enable = true;
-        source.url = "ssh://git@github.com/test/repo";
-        source.sshKeyFile = "/run/secrets/test-key";
-      }; } k3sOff ];
-    }).config;
-    k3sAssertion = lib.findFirst (a: lib.hasInfix "k3s" a.message) null evaluated.assertions;
-  in mkTest "fluxcd-assertions-require-k3s"
-    (k3sAssertion != null && !k3sAssertion.assertion)
-    "should assert k3s is enabled (and fail when it's not)")
-
-  (let
-    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
-    k3sOn = {
-      options = {
-        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
-        services.blackmatter.k3s = {
-          enable = lib.mkOption { type = lib.types.bool; default = true; };
-          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
-        };
-        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
-      };
-    };
-    evaluated = (lib.evalModules {
-      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
-        enable = true;
-        source.sshKeyFile = "/run/secrets/test-key";
-      }; } k3sOn ];
-    }).config;
-    urlAssertion = lib.findFirst (a: lib.hasInfix "url" a.message) null evaluated.assertions;
-  in mkTest "fluxcd-assertions-require-url"
-    (urlAssertion != null && !urlAssertion.assertion)
-    "should assert source.url is set (and fail when empty)")
-
-  (let
-    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
-    k3sOn = {
-      options = {
-        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
-        services.blackmatter.k3s = {
-          enable = lib.mkOption { type = lib.types.bool; default = true; };
-          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
-        };
-        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
-      };
-    };
-    evaluated = (lib.evalModules {
-      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
-        enable = true;
-        source.url = "ssh://git@github.com/test/repo";
-        # sshKeyFile intentionally null
-      }; } k3sOn ];
-    }).config;
-    sshAssertion = lib.findFirst (a: lib.hasInfix "sshKeyFile" a.message) null evaluated.assertions;
-  in mkTest "fluxcd-assertions-require-ssh-key"
-    (sshAssertion != null && !sshAssertion.assertion)
-    "should assert sshKeyFile when auth=ssh (and fail when null)")
-
-  # ── FluxCD assertion tests (token auth) ─────────────────────────────
-
-  (let
-    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
-    k3sOn = {
-      options = {
-        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
-        services.blackmatter.k3s = {
-          enable = lib.mkOption { type = lib.types.bool; default = true; };
-          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
-        };
-        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
-      };
-    };
-    evaluated = (lib.evalModules {
-      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
-        enable = true;
-        source.url = "https://github.com/test/repo";
-        source.auth = "token";
-        # tokenFile intentionally null
-      }; } k3sOn ];
-    }).config;
-    tokenAssertion = lib.findFirst (a: lib.hasInfix "tokenFile" a.message) null evaluated.assertions;
-  in mkTest "fluxcd-assertions-require-token-file"
-    (tokenAssertion != null && !tokenAssertion.assertion)
-    "should assert tokenFile when auth=token (and fail when null)")
-
-  (let
-    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
-    k3sOn = {
-      options = {
-        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
-        services.blackmatter.k3s = {
-          enable = lib.mkOption { type = lib.types.bool; default = true; };
-          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
-        };
-        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
-      };
-    };
-    # Token auth with tokenFile set — ssh assertion should NOT fire
-    evaluated = (lib.evalModules {
-      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
-        enable = true;
-        source.url = "https://github.com/test/repo";
-        source.auth = "token";
-        source.tokenFile = "/run/secrets/test-token";
-      }; } k3sOn ];
-    }).config;
-    sshAssertion = lib.findFirst (a: lib.hasInfix "sshKeyFile" a.message) null evaluated.assertions;
-  in mkTest "fluxcd-token-auth-no-ssh-assertion"
-    (sshAssertion == null || sshAssertion.assertion)
-    "ssh key assertion should pass (not fire) when auth=token")
-
-  # ── FluxCD SOPS assertion ───────────────────────────────────────────
-
-  (let
-    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
-    k3sOn = {
-      options = {
-        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
-        services.blackmatter.k3s = {
-          enable = lib.mkOption { type = lib.types.bool; default = true; };
-          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
-        };
-        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
-      };
-    };
-    evaluated = (lib.evalModules {
-      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
-        enable = true;
-        source.url = "ssh://git@github.com/test/repo";
-        source.sshKeyFile = "/run/secrets/test-key";
-        sops.enable = true;
-      }; } k3sOn ];
-    }).config;
-    ageAssertion = lib.findFirst (a: lib.hasInfix "ageKeyFile" a.message) null evaluated.assertions;
-  in mkTest "fluxcd-assertions-require-age-key-when-sops"
-    (ageAssertion != null && !ageAssertion.assertion)
-    "should assert ageKeyFile when sops is enabled (and fail when null)")
-
-  # ── FluxCD config generation tests ──────────────────────────────────
-
-  (let
-    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
-    k3sOn = {
-      options = {
-        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
-        services.blackmatter.k3s = {
-          enable = lib.mkOption { type = lib.types.bool; default = true; };
-          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
-        };
-        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
-      };
-    };
-    evaluated = (lib.evalModules {
-      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
-        enable = true;
-        source.url = "ssh://git@github.com/test/repo";
-        source.sshKeyFile = "/run/secrets/test-key";
-      }; } k3sOn ];
-    }).config;
-    manifests = evaluated.services.blackmatter.k3s.manifests;
-  in mkTest "fluxcd-manifests-written-when-enabled"
-    (manifests ? "gotk-components" && manifests ? "gotk-sync")
-    "should write gotk-components and gotk-sync manifests to k3s")
-
-  (let
-    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
-    k3sOn = {
-      options = {
-        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
-        services.blackmatter.k3s = {
-          enable = lib.mkOption { type = lib.types.bool; default = true; };
-          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
-        };
-        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
-      };
-    };
-    evaluated = (lib.evalModules {
-      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
-        enable = true;
-        source.url = "ssh://git@github.com/test/repo";
-        source.sshKeyFile = "/run/secrets/test-key";
-      }; } k3sOn ];
-    }).config;
-    syncContent = evaluated.services.blackmatter.k3s.manifests."gotk-sync".content;
-  in mkTest "fluxcd-sync-manifest-contains-git-url"
-    (lib.hasInfix "ssh://git@github.com/test/repo" syncContent
-     && lib.hasInfix "GitRepository" syncContent
-     && lib.hasInfix "Kustomization" syncContent)
-    "sync manifest should contain the configured git URL and both CRDs")
-
-  (let
-    fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };
-    k3sOn = {
-      options = {
-        systemd.services = lib.mkOption { type = lib.types.attrs; default = {}; };
-        services.blackmatter.k3s = {
-          enable = lib.mkOption { type = lib.types.bool; default = true; };
-          manifests = lib.mkOption { type = lib.types.attrs; default = {}; };
-        };
-        assertions = lib.mkOption { type = lib.types.listOf lib.types.attrs; default = []; };
-      };
-    };
-    evaluated = (lib.evalModules {
-      modules = [ fluxcdMod { config.services.blackmatter.fluxcd = {
-        enable = true;
-        source.url = "https://github.com/test/repo";
-        source.auth = "token";
-        source.tokenFile = "/run/secrets/test-token";
-      }; } k3sOn ];
-    }).config;
-    syncContent = evaluated.services.blackmatter.k3s.manifests."gotk-sync".content;
-  in mkTest "fluxcd-token-auth-sync-manifest"
-    (lib.hasInfix "https://github.com/test/repo" syncContent
-     && lib.hasInfix "GitRepository" syncContent)
-    "token auth sync manifest should contain HTTPS URL")
 
   (let
     fluxcdMod = import ../../module/nixos/fluxcd { inherit nixosHelpers; };

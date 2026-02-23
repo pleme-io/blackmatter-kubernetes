@@ -1,9 +1,15 @@
 # Cluster profiles — pre-canned K8s distribution configurations
 #
 # Each profile is a validated combination of CNI, ingress, observability,
-# security, and storage that maps to concrete k3s flags + additional packages.
+# security, and storage. Consumed by both k3s and vanilla k8s modules:
 #
-# Usage: services.blackmatter.k3s.profile = "cilium-standard";
+#   k3s:  uses disable (--disable flags), extraFlags, firewall, kernelModules
+#   k8s:  uses disableKubeProxy, firewall, kernelModules, extraPackages
+#         (disable/extraFlags are k3s-specific, ignored by k8s module)
+#
+# Usage:
+#   services.blackmatter.k3s.profile = "cilium-standard";
+#   services.blackmatter.kubernetes.profile = "cilium-standard";
 { lib }:
 
 let
@@ -13,6 +19,7 @@ let
     use,
     cni,
     disable ? [],
+    disableKubeProxy ? false,
     extraFlags ? [],
     extraPackages ? [],
     firewallTCP ? [],
@@ -21,7 +28,7 @@ let
     kernelModules ? [],
     manifests ? {}
   }: {
-    inherit name description use cni disable extraFlags
+    inherit name description use cni disable disableKubeProxy extraFlags
             extraPackages firewallTCP firewallUDP
             trustedInterfaces kernelModules manifests;
   };
@@ -32,7 +39,7 @@ in {
 
     flannel-minimal = mkProfile {
       name = "flannel-minimal";
-      description = "Bare k3s with flannel CNI, all optional components disabled";
+      description = "Bare cluster with flannel CNI, minimal components";
       use = "dev, CI, edge/IoT, learning";
       cni = "flannel";
       disable = [ "traefik" "servicelb" "metrics-server" "local-storage" ];
@@ -40,7 +47,7 @@ in {
 
     flannel-standard = mkProfile {
       name = "flannel-standard";
-      description = "K3s with all bundled components enabled";
+      description = "Standard cluster with flannel CNI and bundled components";
       use = "dev, staging, small production";
       cni = "flannel";
     };
@@ -108,6 +115,7 @@ in {
       use = "production with eBPF performance and observability";
       cni = "cilium";
       disable = [ "servicelb" ];
+      disableKubeProxy = true;
       extraFlags = [
         "--flannel-backend=none"
         "--disable-network-policy"
@@ -126,6 +134,7 @@ in {
       use = "microservices production, zero-trust networking";
       cni = "cilium";
       disable = [ "traefik" "servicelb" ];
+      disableKubeProxy = true;
       extraFlags = [
         "--flannel-backend=none"
         "--disable-network-policy"

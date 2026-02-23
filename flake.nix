@@ -1,5 +1,5 @@
 {
-  description = "Blackmatter Kubernetes - K8s tools, K9s TUI, K3d, k3s, and cluster management";
+  description = "Blackmatter Kubernetes - K8s tools, K9s TUI, K3d, k3s, vanilla k8s, and cluster management";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/d6c71932130818840fc8fe9509cf50be8c64634f";
@@ -15,7 +15,7 @@
 
   outputs = { self, nixpkgs, substrate, blackmatter-go }:
   let
-    # k3s + tools are Linux-only; HM modules are cross-platform
+    # k3s + k8s + tools are Linux-only; HM modules are cross-platform
     linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
 
     # Cross-platform systems (for tools that work on macOS too)
@@ -27,6 +27,12 @@
     # Go tool builder from blackmatter-go
     goToolBuilder = import "${blackmatter-go}/lib/tool.nix";
     mkGoTool = goToolBuilder.mkGoTool;
+
+    # Go monorepo source factory from substrate
+    mkGoMonorepoSource = (import "${substrate}/lib/go-monorepo.nix").mkGoMonorepoSource;
+
+    # Test helpers from substrate
+    testHelpers = import "${substrate}/lib/test-helpers.nix" { lib = nixpkgs.lib; };
 
     nixosHelpers = import "${substrate}/lib/nixos-service-helpers.nix" {
       lib = nixpkgs.lib;
@@ -54,15 +60,30 @@
     });
 
     k3sModule = self.nixosModules.k3s;
+    k8sModule = self.nixosModules.kubernetes;
 
     # Profile definitions (pure data)
     profileDefs = import ./lib/profiles.nix { lib = nixpkgs.lib; };
 
-    # Map profile extraPackages names to overlay package names
-    resolveProfilePackages = pkgs: profileName: let
+    # Map profile extraPackages names to overlay package names (k3s)
+    resolveK3sProfilePackages = pkgs: profileName: let
       profile = profileDefs.profiles.${profileName};
       resolve = name: pkgs.${"blackmatter-${name}"};
     in [ (pkgs.blackmatter-k3s or pkgs.k3s) ] ++ map resolve profile.extraPackages;
+
+    # Map profile extraPackages names to overlay package names (vanilla k8s)
+    resolveK8sProfilePackages = pkgs: profileName: let
+      profile = profileDefs.profiles.${profileName};
+      resolve = name: pkgs.${"blackmatter-${name}"};
+      k8sPkgs = import ./pkgs/kubernetes { inherit pkgs mkGoMonorepoSource; };
+    in with k8sPkgs; [
+      kubelet_1_34
+      kubeadm_1_34
+      kube-apiserver_1_34
+      kube-controller-manager_1_34
+      kube-scheduler_1_34
+      kube-proxy_1_34
+    ] ++ map resolve profile.extraPackages;
 
   in {
     # ── Home-manager modules (cross-platform) ───────────────────────
@@ -72,12 +93,13 @@
     nixosModules.k3s = import ./module/nixos/k3s { inherit nixosHelpers; };
     nixosModules.kubectl = import ./module/nixos/kubectl;
     nixosModules.fluxcd = import ./module/nixos/fluxcd { inherit nixosHelpers; };
+    nixosModules.kubernetes = import ./module/nixos/kubernetes { inherit nixosHelpers mkGoMonorepoSource; };
 
     # ── Overlay ─────────────────────────────────────────────────────
     overlays.default = nixpkgs.lib.composeManyExtensions [
       goOverlay
       (final: prev: let
-        tools = import ./pkgs/tools { inherit mkGoTool; pkgs = final; };
+        tools = import ./pkgs/tools { inherit mkGoTool mkGoMonorepoSource; pkgs = final; };
         network = import ./pkgs/network { inherit mkGoTool; pkgs = final; };
         security = import ./pkgs/security { inherit mkGoTool; pkgs = final; };
         cluster = import ./pkgs/cluster { inherit mkGoTool; pkgs = final; };
@@ -85,10 +107,37 @@
         plugins = import ./pkgs/plugins { inherit mkGoTool; pkgs = final; };
         observability = import ./pkgs/observability { inherit mkGoTool; pkgs = final; };
         testing = import ./pkgs/testing { inherit mkGoTool; pkgs = final; };
+        k8sPkgs = import ./pkgs/kubernetes { pkgs = final; inherit mkGoMonorepoSource; };
       in {
         # ── k3s (Linux-only, 3-stage build) ─────────────────────────
         blackmatter-k3s = (import ./pkgs/k3s { inherit (final) lib callPackage; }).k3s_1_34;
         blackmatter-k3s-latest = (import ./pkgs/k3s { inherit (final) lib callPackage; }).k3s_1_35;
+
+        # ── Vanilla Kubernetes control plane (Linux-only) ───────────
+        blackmatter-kubelet = k8sPkgs.kubelet_1_34;
+        blackmatter-kubelet-latest = k8sPkgs.kubelet_1_35;
+        blackmatter-kubeadm = k8sPkgs.kubeadm_1_34;
+        blackmatter-kubeadm-latest = k8sPkgs.kubeadm_1_35;
+        blackmatter-kube-apiserver = k8sPkgs.kube-apiserver_1_34;
+        blackmatter-kube-apiserver-latest = k8sPkgs.kube-apiserver_1_35;
+        blackmatter-kube-controller-manager = k8sPkgs.kube-controller-manager_1_34;
+        blackmatter-kube-controller-manager-latest = k8sPkgs.kube-controller-manager_1_35;
+        blackmatter-kube-scheduler = k8sPkgs.kube-scheduler_1_34;
+        blackmatter-kube-scheduler-latest = k8sPkgs.kube-scheduler_1_35;
+        blackmatter-kube-proxy = k8sPkgs.kube-proxy_1_34;
+        blackmatter-kube-proxy-latest = k8sPkgs.kube-proxy_1_35;
+
+        # ── Vanilla Kubernetes runtime (Linux-only) ─────────────────
+        blackmatter-etcd-server = k8sPkgs.etcd_1_34;
+        blackmatter-etcd-server-latest = k8sPkgs.etcd_1_35;
+        blackmatter-containerd = k8sPkgs.containerd_1_34;
+        blackmatter-containerd-latest = k8sPkgs.containerd_1_35;
+        blackmatter-runc = k8sPkgs.runc_1_34;
+        blackmatter-runc-latest = k8sPkgs.runc_1_35;
+        blackmatter-k8s-cni-plugins = k8sPkgs.cni-plugins_1_34;
+        blackmatter-k8s-cni-plugins-latest = k8sPkgs.cni-plugins_1_35;
+        blackmatter-crictl = k8sPkgs.crictl_1_34;
+        blackmatter-crictl-latest = k8sPkgs.crictl_1_35;
 
         # ── Core CLI tools ──────────────────────────────────────────
         blackmatter-kubectl = tools.kubectl;
@@ -198,13 +247,19 @@
         blackmatter-hey = testing.hey;
         blackmatter-fortio = testing.fortio;
 
-        # ── Cluster profile package sets (Linux-only) ─────────────────
-        # Each profile bundles k3s + all extra tools it needs.
-        # e.g. blackmatter-k3s-profile-cilium-standard = buildEnv { k3s, cilium-cli, hubble }
+        # ── k3s profile package sets (Linux-only) ───────────────────
       } // (nixpkgs.lib.mapAttrs' (name: profile:
         nixpkgs.lib.nameValuePair "blackmatter-k3s-profile-${name}" (final.buildEnv {
           name = "k3s-profile-${name}";
-          paths = resolveProfilePackages final name;
+          paths = resolveK3sProfilePackages final name;
+        })
+      ) profileDefs.profiles)
+
+      # ── k8s profile package sets (Linux-only) ───────────────────
+      // (nixpkgs.lib.mapAttrs' (name: profile:
+        nixpkgs.lib.nameValuePair "blackmatter-k8s-profile-${name}" (final.buildEnv {
+          name = "k8s-profile-${name}";
+          paths = resolveK8sProfilePackages final name;
         })
       ) profileDefs.profiles))
     ];
@@ -312,6 +367,32 @@
       k3s-latest = pkgs.blackmatter-k3s-latest;
       calicoctl = pkgs.blackmatter-calicoctl;
 
+      # Vanilla Kubernetes control plane (Linux-only)
+      kubelet = pkgs.blackmatter-kubelet;
+      kubelet-latest = pkgs.blackmatter-kubelet-latest;
+      kubeadm = pkgs.blackmatter-kubeadm;
+      kubeadm-latest = pkgs.blackmatter-kubeadm-latest;
+      kube-apiserver = pkgs.blackmatter-kube-apiserver;
+      kube-apiserver-latest = pkgs.blackmatter-kube-apiserver-latest;
+      kube-controller-manager = pkgs.blackmatter-kube-controller-manager;
+      kube-controller-manager-latest = pkgs.blackmatter-kube-controller-manager-latest;
+      kube-scheduler = pkgs.blackmatter-kube-scheduler;
+      kube-scheduler-latest = pkgs.blackmatter-kube-scheduler-latest;
+      kube-proxy = pkgs.blackmatter-kube-proxy;
+      kube-proxy-latest = pkgs.blackmatter-kube-proxy-latest;
+
+      # Vanilla Kubernetes runtime (Linux-only)
+      etcd-server = pkgs.blackmatter-etcd-server;
+      etcd-server-latest = pkgs.blackmatter-etcd-server-latest;
+      containerd = pkgs.blackmatter-containerd;
+      containerd-latest = pkgs.blackmatter-containerd-latest;
+      runc = pkgs.blackmatter-runc;
+      runc-latest = pkgs.blackmatter-runc-latest;
+      k8s-cni-plugins = pkgs.blackmatter-k8s-cni-plugins;
+      k8s-cni-plugins-latest = pkgs.blackmatter-k8s-cni-plugins-latest;
+      crictl = pkgs.blackmatter-crictl;
+      crictl-latest = pkgs.blackmatter-crictl-latest;
+
       # Container runtime tools (Linux-only)
       nerdctl = pkgs.blackmatter-nerdctl;
       buildkit = pkgs.blackmatter-buildkit;
@@ -331,18 +412,21 @@
       calico-pod2daemon = pkgs.blackmatter-calico-pod2daemon;
       confd-calico = pkgs.blackmatter-confd-calico;
     }
-    # Profile package sets (Linux-only — contain k3s + extra tools)
+    # Profile package sets (Linux-only)
     // nixpkgs.lib.optionalAttrs (builtins.elem system linuxSystems)
-      (nixpkgs.lib.mapAttrs' (name: _:
-        nixpkgs.lib.nameValuePair "profile-${name}" pkgs.${"blackmatter-k3s-profile-${name}"}
-      ) profileDefs.profiles));
+      ((nixpkgs.lib.mapAttrs' (name: _:
+        nixpkgs.lib.nameValuePair "k3s-profile-${name}" pkgs.${"blackmatter-k3s-profile-${name}"}
+      ) profileDefs.profiles)
+      // (nixpkgs.lib.mapAttrs' (name: _:
+        nixpkgs.lib.nameValuePair "k8s-profile-${name}" pkgs.${"blackmatter-k8s-profile-${name}"}
+      ) profileDefs.profiles)));
 
     # ── Tests ───────────────────────────────────────────────────────
     # Unit tests: nix eval .#tests.x86_64-linux.unit
     tests = forEachLinuxSystem ({ pkgs, ... }: {
       unit = import ./tests/unit {
         lib = nixpkgs.lib;
-        inherit nixosHelpers;
+        inherit nixosHelpers testHelpers mkGoMonorepoSource;
       };
       hm-module = import ./tests/unit/hm-module.nix {
         lib = nixpkgs.lib;
@@ -357,6 +441,7 @@
       k3sPackage = pkgs.blackmatter-k3s;
       k3sPackageLatest = pkgs.blackmatter-k3s-latest;
     in {
+      # ── k3s tests ────────────────────────────────────────────────
       # 1.34 (default track)
       single-node = import ./tests/integration/single-node.nix {
         inherit pkgs k3sModule k3sPackage;
@@ -400,40 +485,39 @@
         profile = "flannel-minimal";
       };
 
-      # Profile evaluation checks — verify every profile × distribution evaluates
-      profile-eval = let
-        evalProfile = profileName: let
-          mod = k3sModule;
-          evaluated = nixpkgs.lib.evalModules {
-            modules = [
-              mod
-              {
-                config.services.blackmatter.k3s = {
-                  enable = true;
-                  profile = profileName;
-                };
-              }
-              {
-                options = {
-                  systemd.services = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.attrs; default = {}; };
-                  systemd.tmpfiles.rules = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.listOf nixpkgs.lib.types.str; default = []; };
-                  networking.firewall = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.attrs; default = {}; };
-                  boot.kernelModules = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.listOf nixpkgs.lib.types.str; default = []; };
-                  boot.kernel.sysctl = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.attrs; default = {}; };
-                  environment.systemPackages = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.listOf nixpkgs.lib.types.package; default = []; };
-                  environment.shellAliases = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.attrs; default = {}; };
-                  assertions = nixpkgs.lib.mkOption { type = nixpkgs.lib.types.listOf nixpkgs.lib.types.attrs; default = []; };
-                };
-              }
-            ];
-          };
-        in evaluated.config.services.blackmatter.k3s.profile == profileName;
-        allPass = nixpkgs.lib.all (name: evalProfile name) (nixpkgs.lib.attrNames profileDefs.profiles);
-      in pkgs.runCommand "profile-eval-check" {} (
-        if allPass
-        then "echo 'All ${toString (nixpkgs.lib.length (nixpkgs.lib.attrNames profileDefs.profiles))} profiles evaluate successfully' > $out"
-        else builtins.throw "Profile evaluation failed"
-      );
+      # ── k8s tests ────────────────────────────────────────────────
+      k8s-single-node = import ./tests/integration/k8s-single-node.nix {
+        inherit pkgs k8sModule;
+        lib = nixpkgs.lib;
+      };
+      k8s-single-node-latest = import ./tests/integration/k8s-single-node.nix {
+        inherit pkgs k8sModule;
+        lib = nixpkgs.lib;
+      };
+      k8s-single-node-flannel-minimal = import ./tests/integration/k8s-single-node.nix {
+        inherit pkgs k8sModule;
+        lib = nixpkgs.lib;
+        profile = "flannel-minimal";
+      };
+
+      # ── Profile evaluation checks (using substrate test helpers) ───
+      k8s-profile-eval = testHelpers.mkProfileEvalCheck {
+        inherit pkgs;
+        name = "k8s-profile-eval-check";
+        module = k8sModule;
+        profiles = profileDefs.profiles;
+        configPath = ["services" "blackmatter" "kubernetes"];
+        mkConfig = profileName: { enable = false; profile = profileName; };
+      };
+
+      profile-eval = testHelpers.mkProfileEvalCheck {
+        inherit pkgs;
+        name = "k3s-profile-eval-check";
+        module = k3sModule;
+        profiles = profileDefs.profiles;
+        configPath = ["services" "blackmatter" "k3s"];
+        mkConfig = profileName: { enable = true; profile = profileName; };
+      };
     };
   };
 }
