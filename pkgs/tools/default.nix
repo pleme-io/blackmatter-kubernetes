@@ -7,7 +7,7 @@
 # Usage:
 #   tools = import ./pkgs/tools { inherit mkGoTool pkgs; };
 #   # tools.helm, tools.k9s, tools.stern, etc.
-{ mkGoTool, mkGoMonorepoSource, pkgs }:
+{ mkGoTool, pkgs }:
 
 {
   helm = import ./helm.nix { inherit mkGoTool pkgs; };
@@ -21,7 +21,6 @@
   kustomize = import ./kustomize.nix { inherit mkGoTool pkgs; };
   cilium-cli = import ./cilium-cli.nix { inherit mkGoTool pkgs; };
   calicoctl = import ./calicoctl.nix { inherit mkGoTool pkgs; };
-  kubectl = import ./kubectl.nix { inherit pkgs mkGoMonorepoSource; };
 
   # Container/image tools
   crane = import ./crane.nix { inherit mkGoTool pkgs; };

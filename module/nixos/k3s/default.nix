@@ -62,19 +62,13 @@ let
 
   flags = if cfg.role == "server" then serverFlags else agentFlags;
 
-  # DNS pre-check script
-  dnsCheckScript = pkgs.writeShellScript "k3s-dns-check" ''
-    echo "Waiting for network and DNS to be ready..."
-    for i in $(seq 1 ${toString cfg.waitForDNS.timeout}); do
-      if ${pkgs.dnsutils}/bin/nslookup registry-1.docker.io >/dev/null 2>&1; then
-        echo "DNS is ready!"
-        exit 0
-      fi
-      echo "Waiting for DNS... ($i/${toString cfg.waitForDNS.timeout})"
-      sleep 2
-    done
-    echo "DNS check complete, proceeding with k3s startup"
-  '';
+  # Shared Kubernetes base config (kernel modules, sysctl, DNS check, options)
+  base = import ../../../lib/kubernetes-base.nix { inherit lib pkgs; };
+
+  dnsCheckScript = base.mkDnsCheckScript {
+    name = "k3s";
+    timeout = cfg.waitForDNS.timeout;
+  };
 
   # NVIDIA post-start script
   nvidiaPostStartScript = pkgs.writeShellScript "k3s-nvidia-setup" ''
@@ -90,17 +84,6 @@ let
     done
     echo "NVIDIA runtime configuration complete"
   '';
-
-  # Kernel modules needed by k3s
-  baseKernelModules = [ "overlay" "br_netfilter" ];
-  ipvsModules = [ "ip_vs" "ip_vs_rr" "ip_vs_wrr" "ip_vs_sh" ];
-
-  # Base sysctl settings
-  baseSysctl = {
-    "net.bridge.bridge-nf-call-iptables" = 1;
-    "net.bridge.bridge-nf-call-ip6tables" = 1;
-    "net.ipv4.ip_forward" = 1;
-  };
 
 in {
   options.services.blackmatter.k3s = {
@@ -295,65 +278,11 @@ in {
       description = "Pre-provisioned container images (loaded before k3s starts)";
     };
 
-    firewall = {
-      enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = "Automatically configure firewall rules";
-      };
+    firewall = base.mkFirewallOptions;
 
-      apiServerPort = mkOption {
-        type = types.int;
-        default = 6443;
-        description = "Kubernetes API server port";
-      };
+    kernel = base.mkKernelOptions;
 
-      extraTCPPorts = mkOption {
-        type = types.listOf types.int;
-        default = [];
-        description = "Additional TCP ports to open";
-      };
-
-      extraUDPPorts = mkOption {
-        type = types.listOf types.int;
-        default = [ 8472 ];
-        description = "Additional UDP ports to open (default includes VXLAN)";
-      };
-
-      trustedInterfaces = mkOption {
-        type = types.listOf types.str;
-        default = [ "cni0" "flannel.1" ];
-        description = "Network interfaces to trust (CNI bridges)";
-      };
-    };
-
-    kernel = {
-      enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = "Automatically configure kernel modules and sysctl";
-      };
-
-      extraModules = mkOption {
-        type = types.listOf types.str;
-        default = [];
-        description = "Additional kernel modules to load";
-      };
-    };
-
-    waitForDNS = {
-      enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = "Wait for DNS before starting k3s";
-      };
-
-      timeout = mkOption {
-        type = types.int;
-        default = 30;
-        description = "Number of retries (2s interval) for DNS check";
-      };
-    };
+    waitForDNS = base.mkWaitForDNSOptions { description = "k3s"; };
 
     nvidia = {
       enable = mkOption {
@@ -444,22 +373,14 @@ in {
       );
 
       # ── Firewall ─────────────────────────────────────────────────────
-      networking.firewall = mkIf cfg.firewall.enable {
-        allowedTCPPorts =
-          optional (cfg.role == "server") cfg.firewall.apiServerPort
-          ++ [ 10250 ]  # kubelet
-          ++ cfg.firewall.extraTCPPorts;
-
-        allowedUDPPorts = cfg.firewall.extraUDPPorts;
-        trustedInterfaces = cfg.firewall.trustedInterfaces;
+      networking.firewall = base.mkFirewallConfig {
+        inherit cfg;
+        isServer = cfg.role == "server";
       };
 
       # ── Kernel configuration ─────────────────────────────────────────
-      boot.kernelModules = mkIf cfg.kernel.enable (
-        baseKernelModules ++ cfg.kernel.extraModules
-      );
-
-      boot.kernel.sysctl = mkIf cfg.kernel.enable baseSysctl;
+      boot.kernelModules = base.mkKernelModulesConfig { inherit cfg; };
+      boot.kernel.sysctl = base.mkSysctlConfig { inherit cfg; };
     }
   ]);
 }

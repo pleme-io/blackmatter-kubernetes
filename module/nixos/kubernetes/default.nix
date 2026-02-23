@@ -11,7 +11,7 @@
 #     distribution = "1.34";
 #     profile = "flannel-standard";
 #   };
-{ nixosHelpers, mkGoMonorepoSource }:
+{ nixosHelpers, mkGoMonorepoSource, mkGoMonorepoBinary }:
 
 { config, lib, pkgs, ... }:
 
@@ -28,36 +28,19 @@ let
     else null;
 
   versionRegistry = import ../../../lib/versions;
-  k8sPkgs = import ../../../pkgs/kubernetes { inherit pkgs mkGoMonorepoSource; };
+  k8sPkgs = import ../../../pkgs/kubernetes { inherit pkgs mkGoMonorepoSource mkGoMonorepoBinary; };
 
   # Select packages based on distribution track
   trackSuffix = builtins.replaceStrings ["."] ["_"] cfg.distribution;
   trackPackages = k8sPkgs.${"track_${trackSuffix}"};
 
-  # Kernel modules needed by vanilla k8s
-  baseKernelModules = [ "overlay" "br_netfilter" ];
-  ipvsModules = [ "ip_vs" "ip_vs_rr" "ip_vs_wrr" "ip_vs_sh" ];
+  # Shared Kubernetes base config (kernel modules, sysctl, DNS check, options)
+  base = import ../../../lib/kubernetes-base.nix { inherit lib pkgs; };
 
-  # Base sysctl settings
-  baseSysctl = {
-    "net.bridge.bridge-nf-call-iptables" = 1;
-    "net.bridge.bridge-nf-call-ip6tables" = 1;
-    "net.ipv4.ip_forward" = 1;
+  dnsCheckScript = base.mkDnsCheckScript {
+    name = "k8s";
+    timeout = cfg.waitForDNS.timeout;
   };
-
-  # DNS pre-check script (shared with k3s pattern)
-  dnsCheckScript = pkgs.writeShellScript "k8s-dns-check" ''
-    echo "Waiting for network and DNS to be ready..."
-    for i in $(seq 1 ${toString cfg.waitForDNS.timeout}); do
-      if ${pkgs.dnsutils}/bin/nslookup registry-1.docker.io >/dev/null 2>&1; then
-        echo "DNS is ready!"
-        exit 0
-      fi
-      echo "Waiting for DNS... ($i/${toString cfg.waitForDNS.timeout})"
-      sleep 2
-    done
-    echo "DNS check complete, proceeding with Kubernetes startup"
-  '';
 
 in {
   imports = [
@@ -219,65 +202,11 @@ in {
       description = "Auto-deploy manifests (applied after cluster init)";
     };
 
-    firewall = {
-      enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = "Automatically configure firewall rules";
-      };
+    firewall = base.mkFirewallOptions;
 
-      apiServerPort = mkOption {
-        type = types.int;
-        default = 6443;
-        description = "Kubernetes API server port";
-      };
+    kernel = base.mkKernelOptions;
 
-      extraTCPPorts = mkOption {
-        type = types.listOf types.int;
-        default = [];
-        description = "Additional TCP ports to open";
-      };
-
-      extraUDPPorts = mkOption {
-        type = types.listOf types.int;
-        default = [ 8472 ];
-        description = "Additional UDP ports to open (default includes VXLAN)";
-      };
-
-      trustedInterfaces = mkOption {
-        type = types.listOf types.str;
-        default = [ "cni0" "flannel.1" ];
-        description = "Network interfaces to trust (CNI bridges)";
-      };
-    };
-
-    kernel = {
-      enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = "Automatically configure kernel modules and sysctl";
-      };
-
-      extraModules = mkOption {
-        type = types.listOf types.str;
-        default = [];
-        description = "Additional kernel modules to load";
-      };
-    };
-
-    waitForDNS = {
-      enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = "Wait for DNS before starting kubelet";
-      };
-
-      timeout = mkOption {
-        type = types.int;
-        default = 30;
-        description = "Number of retries (2s interval) for DNS check";
-      };
-    };
+    waitForDNS = base.mkWaitForDNSOptions { description = "kubelet"; };
 
     gracefulNodeShutdown = {
       enable = mkOption {
@@ -318,22 +247,17 @@ in {
       ];
 
       # ── Firewall ───────────────────────────────────────────────────
-      networking.firewall = mkIf cfg.firewall.enable {
-        allowedTCPPorts =
-          optional (cfg.role == "control-plane") cfg.firewall.apiServerPort
-          ++ [ 10250 ]  # kubelet
-          ++ cfg.firewall.extraTCPPorts;
-
-        allowedUDPPorts = cfg.firewall.extraUDPPorts;
-        trustedInterfaces = cfg.firewall.trustedInterfaces;
+      networking.firewall = base.mkFirewallConfig {
+        inherit cfg;
+        isServer = cfg.role == "control-plane";
       };
 
       # ── Kernel configuration ───────────────────────────────────────
-      boot.kernelModules = mkIf cfg.kernel.enable (
-        baseKernelModules ++ ipvsModules ++ cfg.kernel.extraModules
-      );
-
-      boot.kernel.sysctl = mkIf cfg.kernel.enable baseSysctl;
+      boot.kernelModules = base.mkKernelModulesConfig {
+        inherit cfg;
+        extraBaseModules = base.ipvsModules;
+      };
+      boot.kernel.sysctl = base.mkSysctlConfig { inherit cfg; };
 
       # ── System packages ────────────────────────────────────────────
       environment.systemPackages = [

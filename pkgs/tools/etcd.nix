@@ -1,12 +1,20 @@
 # etcd tools — etcdctl and etcdutl built from the etcd monorepo
+#
+# Version sourced from shared registry (lib/versions/) to stay in sync with
+# the etcd server in pkgs/kubernetes/etcd.nix. Source hash must match since
+# both fetch the same owner/repo/rev.
 { pkgs }:
 let
-  version = "3.6.7";
+  # Use latest track version from shared registry
+  versionRegistry = import ../../lib/versions;
+  version = versionRegistry."1.35".etcdVersion;
+
   src = pkgs.fetchFromGitHub {
     owner = "etcd-io";
     repo = "etcd";
     rev = "v${version}";
-    hash = "sha256-i8VZlK76OQQeojKHo9sdkyNR0Hdiofx0TLUDWKiXOTU=";
+    # Shared with pkgs/kubernetes/etcd.nix (same repo + rev = same hash)
+    hash = (import ../kubernetes/etcd-hashes.nix).${version};
   };
 
   etcdctl = pkgs.buildGoModule {

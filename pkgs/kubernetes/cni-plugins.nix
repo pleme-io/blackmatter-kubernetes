@@ -2,12 +2,13 @@
 #
 # These are the vanilla upstream CNI plugins (NOT the rancher/k3s fork).
 # Used for vanilla Kubernetes. Version comes from the shared version registry.
-{ pkgs, cniPluginsVersion }:
+{ mkRuntimeComponent, cniPluginsVersion }:
 
-let
+mkRuntimeComponent {
+  pname = "cni-plugins";
   version = cniPluginsVersion;
-
-  # Hash map per CNI version (placeholder hashes for untested versions)
+  owner = "containernetworking";
+  repo = "plugins";
   hashes = {
     "1.4.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     "1.5.1" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -16,19 +17,7 @@ let
     "1.8.0" = "sha256-/I2fEVVQ89y8l95Ri0V5qxVj/SzXVqP0IT2vSdz8jC8=";
     "1.9.0" = "sha256-0ZonR8pV20bBbC2AkNCJhoseDVxNwwMa7coD/ON6clA=";
   };
-in pkgs.buildGoModule {
-  pname = "cni-plugins";
-  inherit version;
-
-  src = pkgs.fetchFromGitHub {
-    owner = "containernetworking";
-    repo = "plugins";
-    rev = "v${version}";
-    hash = hashes.${version};
-  };
-
-  vendorHash = null; # vendored in-tree
-
+  vendorHash = null;
   subPackages = [
     # IPAM
     "plugins/ipam/dhcp"
@@ -52,17 +41,10 @@ in pkgs.buildGoModule {
     "plugins/meta/tuning"
     "plugins/meta/vrf"
   ];
-
   ldflags = [
-    "-X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=v${version}"
+    "-X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=v${cniPluginsVersion}"
   ];
-
-  doCheck = false;
-
-  meta = {
-    description = "Standard CNI network plugins";
-    homepage = "https://www.cni.dev/";
-    license = pkgs.lib.licenses.asl20;
-    platforms = pkgs.lib.platforms.linux;
-  };
+  description = "Standard CNI network plugins";
+  homepage = "https://www.cni.dev/";
+  mainProgram = "bridge";
 }

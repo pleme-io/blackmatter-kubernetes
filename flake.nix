@@ -31,6 +31,12 @@
     # Go monorepo source factory from substrate
     mkGoMonorepoSource = (import "${substrate}/lib/go-monorepo.nix").mkGoMonorepoSource;
 
+    # Go monorepo binary builder from substrate
+    mkGoMonorepoBinary = (import "${substrate}/lib/go-monorepo-binary.nix").mkGoMonorepoBinary;
+
+    # Versioned overlay generator from substrate
+    mkVersionedOverlay = (import "${substrate}/lib/versioned-overlay.nix").mkVersionedOverlay;
+
     # Test helpers from substrate
     testHelpers = import "${substrate}/lib/test-helpers.nix" { lib = nixpkgs.lib; };
 
@@ -78,7 +84,7 @@
     resolveK8sProfilePackages = pkgs: profileName: let
       profile = profileDefs.profiles.${profileName};
       resolve = name: pkgs.${"blackmatter-${name}"};
-      k8sPkgs = import ./pkgs/kubernetes { inherit pkgs mkGoMonorepoSource; };
+      k8sPkgs = import ./pkgs/kubernetes { inherit pkgs mkGoMonorepoSource mkGoMonorepoBinary; };
     in with k8sPkgs; [
       kubelet_1_34
       kubeadm_1_34
@@ -88,6 +94,78 @@
       kube-proxy_1_34
     ] ++ map resolve profile.extraPackages;
 
+    # ── Overlay helpers ─────────────────────────────────────────────────
+    # Auto-prefix all attrs from a category with "blackmatter-"
+    prefixAll = attrset:
+      nixpkgs.lib.mapAttrs' (name: value:
+        nixpkgs.lib.nameValuePair "blackmatter-${name}" value
+      ) attrset;
+
+    # ── Package list declarations ────────────────────────────────────────
+    # Cross-platform tools (available on macOS + Linux)
+    crossPlatformTools = [
+      # Core CLI
+      "kubectl" "helm" "k9s" "fluxcd" "kubectx" "stern" "kubecolor"
+      "kube-score" "kubectl-tree" "kustomize" "cilium-cli"
+      # Container/image
+      "crane" "ko"
+      # Helm ecosystem
+      "helmfile" "helm-diff" "helm-docs"
+      # Service mesh CLIs
+      "istioctl" "linkerd" "hubble" "cmctl"
+      # Security
+      "kubeseal" "trivy" "grype" "cosign" "kyverno" "open-policy-agent"
+      "conftest" "falcoctl" "kubescape" "kube-linter" "kubeconform" "step-cli"
+      # Cluster management
+      "clusterctl" "talosctl" "vcluster" "crossplane-cli" "kompose" "kwok" "velero"
+      # GitOps & CD
+      "argocd" "tektoncd-cli" "argo-rollouts" "timoni" "kapp"
+      # kubectl plugins
+      "popeye" "kubent" "pluto" "kor" "kube-capacity" "kubectl-neat"
+      "kubectl-images" "krew" "kubectl-ktop" "kubeshark" "kubectl-cnpg" "kubevirt"
+      # Observability
+      "thanos" "logcli" "tempo-cli" "mimirtool" "coredns" "consul"
+      "kube-state-metrics"
+      # Load testing
+      "k6" "vegeta" "hey" "fortio"
+      # Development
+      "kubebuilder" "operator-sdk" "etcd"
+    ];
+
+    # Linux-only tools (k3s, network plugins, runtime components)
+    linuxOnlyTools = [
+      "k3s" "k3s-latest"
+      "calicoctl"
+      # Vanilla Kubernetes default + latest
+      "kubectl-latest"
+      "kubelet" "kubelet-latest"
+      "kubeadm" "kubeadm-latest"
+      "kube-apiserver" "kube-apiserver-latest"
+      "kube-controller-manager" "kube-controller-manager-latest"
+      "kube-scheduler" "kube-scheduler-latest"
+      "kube-proxy" "kube-proxy-latest"
+      "etcd-server" "etcd-server-latest"
+      "containerd" "containerd-latest"
+      "runc" "runc-latest"
+      "k8s-cni-plugins" "k8s-cni-plugins-latest"
+      "crictl" "crictl-latest"
+      # Container runtime tools
+      "nerdctl" "buildkit"
+      # VictoriaMetrics
+      "victoriametrics"
+      # Network plugins
+      "cni-plugins" "flannel" "cni-plugin-flannel" "multus-cni"
+      "calico-cni-plugin" "calico-apiserver" "calico-typha"
+      "calico-kube-controllers" "calico-pod2daemon" "confd-calico"
+    ];
+
+    # Versioned k8s component names (for per-track package generation)
+    k8sVersionedComponents = [
+      "kubectl" "kubelet" "kubeadm" "kube-apiserver" "kube-controller-manager"
+      "kube-scheduler" "kube-proxy" "etcd-server" "containerd"
+      "runc" "k8s-cni-plugins" "crictl"
+    ];
+
   in {
     # ── Home-manager modules (cross-platform) ───────────────────────
     homeManagerModules.default = import ./module/home-manager;
@@ -96,13 +174,13 @@
     nixosModules.k3s = import ./module/nixos/k3s { inherit nixosHelpers; };
     nixosModules.kubectl = import ./module/nixos/kubectl;
     nixosModules.fluxcd = import ./module/nixos/fluxcd { inherit nixosHelpers; };
-    nixosModules.kubernetes = import ./module/nixos/kubernetes { inherit nixosHelpers mkGoMonorepoSource; };
+    nixosModules.kubernetes = import ./module/nixos/kubernetes { inherit nixosHelpers mkGoMonorepoSource mkGoMonorepoBinary; };
 
     # ── Overlay ─────────────────────────────────────────────────────
     overlays.default = nixpkgs.lib.composeManyExtensions [
       goOverlay
       (final: prev: let
-        tools = import ./pkgs/tools { inherit mkGoTool mkGoMonorepoSource; pkgs = final; };
+        tools = import ./pkgs/tools { inherit mkGoTool; pkgs = final; };
         network = import ./pkgs/network { inherit mkGoTool; pkgs = final; };
         security = import ./pkgs/security { inherit mkGoTool; pkgs = final; };
         cluster = import ./pkgs/cluster { inherit mkGoTool; pkgs = final; };
@@ -110,172 +188,53 @@
         plugins = import ./pkgs/plugins { inherit mkGoTool; pkgs = final; };
         observability = import ./pkgs/observability { inherit mkGoTool; pkgs = final; };
         testing = import ./pkgs/testing { inherit mkGoTool; pkgs = final; };
-        k8sPkgs = import ./pkgs/kubernetes { pkgs = final; inherit mkGoMonorepoSource; };
+        k8sPkgs = import ./pkgs/kubernetes { pkgs = final; inherit mkGoMonorepoSource mkGoMonorepoBinary; };
         k3sPkgs = import ./pkgs/k3s { inherit (final) lib callPackage; };
 
-        # Generate versioned k3s overlay entries: blackmatter-k3s-1-30, etc.
-        k3sVersioned = nixpkgs.lib.listToAttrs (map (track: let
-          suffix = builtins.replaceStrings ["."] ["-"] track;
-          trackSuffix = builtins.replaceStrings ["."] ["_"] track;
-        in {
-          name = "blackmatter-k3s-${suffix}";
-          value = k3sPkgs.${"k3s_${trackSuffix}"};
-        }) allTracks);
+        # Generate versioned overlay entries + default/latest aliases
+        k3sOverlayEntries = mkVersionedOverlay {
+          lib = nixpkgs.lib;
+          tracks = allTracks;
+          defaultTrack = "1.34";
+          latestTrack = "1.35";
+          components = {
+            k3s = { src = k3sPkgs; srcAttr = s: "k3s_${s}"; };
+          };
+        };
+        k8sOverlayEntries = mkVersionedOverlay {
+          lib = nixpkgs.lib;
+          tracks = allTracks;
+          defaultTrack = "1.34";
+          latestTrack = "1.35";
+          components = {
+            kubectl     = { src = k8sPkgs; };
+            kubelet      = { src = k8sPkgs; };
+            kubeadm      = { src = k8sPkgs; };
+            kube-apiserver = { src = k8sPkgs; };
+            kube-controller-manager = { src = k8sPkgs; };
+            kube-scheduler = { src = k8sPkgs; };
+            kube-proxy   = { src = k8sPkgs; };
+            etcd         = { src = k8sPkgs; overlayName = "etcd-server"; };
+            containerd   = { src = k8sPkgs; };
+            runc         = { src = k8sPkgs; };
+            cni-plugins  = { src = k8sPkgs; overlayName = "k8s-cni-plugins"; };
+            crictl       = { src = k8sPkgs; };
+          };
+        };
+      in k3sOverlayEntries // k8sOverlayEntries
 
-        # Generate versioned k8s overlay entries: blackmatter-kubelet-1-30, etc.
-        k8sComponents = [ "kubelet" "kubeadm" "kube-apiserver" "kube-controller-manager"
-                          "kube-scheduler" "kube-proxy" "etcd" "containerd" "runc"
-                          "cni-plugins" "crictl" ];
-        k8sOverlayName = comp:
-          if comp == "etcd" then "etcd-server"
-          else if comp == "cni-plugins" then "k8s-cni-plugins"
-          else comp;
-        k8sVersioned = nixpkgs.lib.listToAttrs (nixpkgs.lib.concatMap (track: let
-          suffix = builtins.replaceStrings ["."] ["-"] track;
-          trackSuffix = builtins.replaceStrings ["."] ["_"] track;
-        in map (comp: {
-          name = "blackmatter-${k8sOverlayName comp}-${suffix}";
-          value = k8sPkgs.${"${comp}_${trackSuffix}"};
-        }) k8sComponents) allTracks);
-      in k3sVersioned // k8sVersioned // {
-        # ── k3s default + latest aliases ──────────────────────────────
-        blackmatter-k3s = k3sPkgs.k3s_1_34;
-        blackmatter-k3s-latest = k3sPkgs.k3s_1_35;
+      # ── Auto-prefixed category packages ──────────────────────────
+      // prefixAll tools
+      // prefixAll network
+      // prefixAll security
+      // prefixAll cluster
+      // prefixAll gitops
+      // prefixAll plugins
+      // prefixAll observability
+      // prefixAll testing
 
-        # ── Vanilla Kubernetes default (1.34) + latest (1.35) aliases ─
-        blackmatter-kubelet = k8sPkgs.kubelet_1_34;
-        blackmatter-kubelet-latest = k8sPkgs.kubelet_1_35;
-        blackmatter-kubeadm = k8sPkgs.kubeadm_1_34;
-        blackmatter-kubeadm-latest = k8sPkgs.kubeadm_1_35;
-        blackmatter-kube-apiserver = k8sPkgs.kube-apiserver_1_34;
-        blackmatter-kube-apiserver-latest = k8sPkgs.kube-apiserver_1_35;
-        blackmatter-kube-controller-manager = k8sPkgs.kube-controller-manager_1_34;
-        blackmatter-kube-controller-manager-latest = k8sPkgs.kube-controller-manager_1_35;
-        blackmatter-kube-scheduler = k8sPkgs.kube-scheduler_1_34;
-        blackmatter-kube-scheduler-latest = k8sPkgs.kube-scheduler_1_35;
-        blackmatter-kube-proxy = k8sPkgs.kube-proxy_1_34;
-        blackmatter-kube-proxy-latest = k8sPkgs.kube-proxy_1_35;
-        blackmatter-etcd-server = k8sPkgs.etcd_1_34;
-        blackmatter-etcd-server-latest = k8sPkgs.etcd_1_35;
-        blackmatter-containerd = k8sPkgs.containerd_1_34;
-        blackmatter-containerd-latest = k8sPkgs.containerd_1_35;
-        blackmatter-runc = k8sPkgs.runc_1_34;
-        blackmatter-runc-latest = k8sPkgs.runc_1_35;
-        blackmatter-k8s-cni-plugins = k8sPkgs.cni-plugins_1_34;
-        blackmatter-k8s-cni-plugins-latest = k8sPkgs.cni-plugins_1_35;
-        blackmatter-crictl = k8sPkgs.crictl_1_34;
-        blackmatter-crictl-latest = k8sPkgs.crictl_1_35;
-
-        # ── Core CLI tools ──────────────────────────────────────────
-        blackmatter-kubectl = tools.kubectl;
-        blackmatter-helm = tools.helm;
-        blackmatter-k9s = tools.k9s;
-        blackmatter-fluxcd = tools.fluxcd;
-        blackmatter-kubectx = tools.kubectx;
-        blackmatter-stern = tools.stern;
-        blackmatter-kubecolor = tools.kubecolor;
-        blackmatter-kube-score = tools.kube-score;
-        blackmatter-kubectl-tree = tools.kubectl-tree;
-        blackmatter-kustomize = tools.kustomize;
-        blackmatter-cilium-cli = tools.cilium-cli;
-        blackmatter-calicoctl = tools.calicoctl;
-
-        # Container/image tools
-        blackmatter-crane = tools.crane;
-        blackmatter-nerdctl = tools.nerdctl;
-        blackmatter-buildkit = tools.buildkit;
-        blackmatter-ko = tools.ko;
-
-        # Helm ecosystem
-        blackmatter-helmfile = tools.helmfile;
-        blackmatter-helm-diff = tools.helm-diff;
-        blackmatter-helm-docs = tools.helm-docs;
-
-        # Infrastructure
-        blackmatter-etcd = tools.etcd;
-
-        # Development frameworks
-        blackmatter-kubebuilder = tools.kubebuilder;
-        blackmatter-operator-sdk = tools.operator-sdk;
-
-        # ── Network plugins & service meshes ────────────────────────
-        blackmatter-cni-plugins = network.cni-plugins;
-        blackmatter-flannel = network.flannel;
-        blackmatter-cni-plugin-flannel = network.cni-plugin-flannel;
-        blackmatter-multus-cni = network.multus-cni;
-        blackmatter-calico-cni-plugin = network.calico-cni-plugin;
-        blackmatter-calico-apiserver = network.calico-apiserver;
-        blackmatter-calico-typha = network.calico-typha;
-        blackmatter-calico-kube-controllers = network.calico-kube-controllers;
-        blackmatter-calico-pod2daemon = network.calico-pod2daemon;
-        blackmatter-confd-calico = network.confd-calico;
-        blackmatter-istioctl = network.istioctl;
-        blackmatter-linkerd = network.linkerd;
-        blackmatter-hubble = network.hubble;
-        blackmatter-cmctl = network.cmctl;
-
-        # ── Security & policy ───────────────────────────────────────
-        blackmatter-kubeseal = security.kubeseal;
-        blackmatter-trivy = security.trivy;
-        blackmatter-grype = security.grype;
-        blackmatter-cosign = security.cosign;
-        blackmatter-kyverno = security.kyverno;
-        blackmatter-open-policy-agent = security.open-policy-agent;
-        blackmatter-conftest = security.conftest;
-        blackmatter-falcoctl = security.falcoctl;
-        blackmatter-kubescape = security.kubescape;
-        blackmatter-kube-linter = security.kube-linter;
-        blackmatter-kubeconform = security.kubeconform;
-        blackmatter-step-cli = security.step-cli;
-
-        # ── Cluster management ──────────────────────────────────────
-        blackmatter-clusterctl = cluster.clusterctl;
-        blackmatter-talosctl = cluster.talosctl;
-        blackmatter-vcluster = cluster.vcluster;
-        blackmatter-crossplane-cli = cluster.crossplane-cli;
-        blackmatter-kompose = cluster.kompose;
-        blackmatter-kwok = cluster.kwok;
-        blackmatter-velero = cluster.velero;
-
-        # ── GitOps & CD ─────────────────────────────────────────────
-        blackmatter-argocd = gitops.argocd;
-        blackmatter-tektoncd-cli = gitops.tektoncd-cli;
-        blackmatter-argo-rollouts = gitops.argo-rollouts;
-        blackmatter-timoni = gitops.timoni;
-        blackmatter-kapp = gitops.kapp;
-
-        # ── kubectl plugins ─────────────────────────────────────────
-        blackmatter-popeye = plugins.popeye;
-        blackmatter-kubent = plugins.kubent;
-        blackmatter-pluto = plugins.pluto;
-        blackmatter-kor = plugins.kor;
-        blackmatter-kube-capacity = plugins.kube-capacity;
-        blackmatter-kubectl-neat = plugins.kubectl-neat;
-        blackmatter-kubectl-images = plugins.kubectl-images;
-        blackmatter-krew = plugins.krew;
-        blackmatter-kubectl-ktop = plugins.kubectl-ktop;
-        blackmatter-kubeshark = plugins.kubeshark;
-        blackmatter-kubectl-cnpg = plugins.kubectl-cnpg;
-        blackmatter-kubevirt = plugins.kubevirt;
-
-        # ── Observability & monitoring ──────────────────────────────
-        blackmatter-thanos = observability.thanos;
-        blackmatter-logcli = observability.logcli;
-        blackmatter-tempo-cli = observability.tempo-cli;
-        blackmatter-mimirtool = observability.mimirtool;
-        blackmatter-victoriametrics = observability.victoriametrics;
-        blackmatter-coredns = observability.coredns;
-        blackmatter-consul = observability.consul;
-        blackmatter-kube-state-metrics = observability.kube-state-metrics;
-
-        # ── Load testing & benchmarking ─────────────────────────────
-        blackmatter-k6 = testing.k6;
-        blackmatter-vegeta = testing.vegeta;
-        blackmatter-hey = testing.hey;
-        blackmatter-fortio = testing.fortio;
-
-        # ── k3s profile package sets (Linux-only) ───────────────────
-      } // (nixpkgs.lib.mapAttrs' (name: profile:
+      # ── k3s profile package sets (Linux-only) ───────────────────
+      // (nixpkgs.lib.mapAttrs' (name: profile:
         nixpkgs.lib.nameValuePair "blackmatter-k3s-profile-${name}" (final.buildEnv {
           name = "k3s-profile-${name}";
           paths = resolveK3sProfilePackages final name;
@@ -292,186 +251,32 @@
     ];
 
     # ── Packages ──────────────────────────────────────────────────────
-    # Cross-platform tools (kubectl, helm, k9s, etc.)
-    packages = forEachSystem ({ pkgs, system, ... }: {
-      default = pkgs.blackmatter-kubectl;
+    packages = forEachSystem ({ pkgs, system, ... }: let
+      lib = nixpkgs.lib;
+      isLinux = builtins.elem system linuxSystems;
 
-      # ── Core CLI tools (cross-platform) ───────────────────────────
-      kubectl = pkgs.blackmatter-kubectl;
-      helm = pkgs.blackmatter-helm;
-      k9s = pkgs.blackmatter-k9s;
-      fluxcd = pkgs.blackmatter-fluxcd;
-      kubectx = pkgs.blackmatter-kubectx;
-      stern = pkgs.blackmatter-stern;
-      kubecolor = pkgs.blackmatter-kubecolor;
-      kube-score = pkgs.blackmatter-kube-score;
-      kubectl-tree = pkgs.blackmatter-kubectl-tree;
-      kustomize = pkgs.blackmatter-kustomize;
-      cilium-cli = pkgs.blackmatter-cilium-cli;
+      # Generate package entries from overlay: shortname → pkgs.blackmatter-shortname
+      mkPkgsFrom = names: lib.genAttrs names (n: pkgs.${"blackmatter-${n}"});
 
-      # Container/image tools (cross-platform)
-      crane = pkgs.blackmatter-crane;
-      ko = pkgs.blackmatter-ko;
-
-      # Helm ecosystem (cross-platform)
-      helmfile = pkgs.blackmatter-helmfile;
-      helm-diff = pkgs.blackmatter-helm-diff;
-      helm-docs = pkgs.blackmatter-helm-docs;
-
-      # Service mesh CLIs (cross-platform)
-      istioctl = pkgs.blackmatter-istioctl;
-      linkerd = pkgs.blackmatter-linkerd;
-      hubble = pkgs.blackmatter-hubble;
-      cmctl = pkgs.blackmatter-cmctl;
-
-      # Security (cross-platform)
-      kubeseal = pkgs.blackmatter-kubeseal;
-      trivy = pkgs.blackmatter-trivy;
-      grype = pkgs.blackmatter-grype;
-      cosign = pkgs.blackmatter-cosign;
-      kyverno = pkgs.blackmatter-kyverno;
-      open-policy-agent = pkgs.blackmatter-open-policy-agent;
-      conftest = pkgs.blackmatter-conftest;
-      falcoctl = pkgs.blackmatter-falcoctl;
-      kubescape = pkgs.blackmatter-kubescape;
-      kube-linter = pkgs.blackmatter-kube-linter;
-      kubeconform = pkgs.blackmatter-kubeconform;
-      step-cli = pkgs.blackmatter-step-cli;
-
-      # Cluster management (cross-platform)
-      clusterctl = pkgs.blackmatter-clusterctl;
-      talosctl = pkgs.blackmatter-talosctl;
-      vcluster = pkgs.blackmatter-vcluster;
-      crossplane-cli = pkgs.blackmatter-crossplane-cli;
-      kompose = pkgs.blackmatter-kompose;
-      kwok = pkgs.blackmatter-kwok;
-      velero = pkgs.blackmatter-velero;
-
-      # GitOps & CD (cross-platform)
-      argocd = pkgs.blackmatter-argocd;
-      tektoncd-cli = pkgs.blackmatter-tektoncd-cli;
-      argo-rollouts = pkgs.blackmatter-argo-rollouts;
-      timoni = pkgs.blackmatter-timoni;
-      kapp = pkgs.blackmatter-kapp;
-
-      # kubectl plugins (cross-platform)
-      popeye = pkgs.blackmatter-popeye;
-      kubent = pkgs.blackmatter-kubent;
-      pluto = pkgs.blackmatter-pluto;
-      kor = pkgs.blackmatter-kor;
-      kube-capacity = pkgs.blackmatter-kube-capacity;
-      kubectl-neat = pkgs.blackmatter-kubectl-neat;
-      kubectl-images = pkgs.blackmatter-kubectl-images;
-      krew = pkgs.blackmatter-krew;
-      kubectl-ktop = pkgs.blackmatter-kubectl-ktop;
-      kubeshark = pkgs.blackmatter-kubeshark;
-      kubectl-cnpg = pkgs.blackmatter-kubectl-cnpg;
-      kubevirt = pkgs.blackmatter-kubevirt;
-
-      # Observability (cross-platform)
-      thanos = pkgs.blackmatter-thanos;
-      logcli = pkgs.blackmatter-logcli;
-      tempo-cli = pkgs.blackmatter-tempo-cli;
-      mimirtool = pkgs.blackmatter-mimirtool;
-      coredns = pkgs.blackmatter-coredns;
-      consul = pkgs.blackmatter-consul;
-      kube-state-metrics = pkgs.blackmatter-kube-state-metrics;
-
-      # Load testing (cross-platform)
-      k6 = pkgs.blackmatter-k6;
-      vegeta = pkgs.blackmatter-vegeta;
-      hey = pkgs.blackmatter-hey;
-      fortio = pkgs.blackmatter-fortio;
-
-      # Development frameworks (cross-platform)
-      kubebuilder = pkgs.blackmatter-kubebuilder;
-      operator-sdk = pkgs.blackmatter-operator-sdk;
-      etcd = pkgs.blackmatter-etcd;
-    }
-    # Linux-only packages
-    // nixpkgs.lib.optionalAttrs (builtins.elem system linuxSystems) {
-      k3s = pkgs.blackmatter-k3s;
-      k3s-latest = pkgs.blackmatter-k3s-latest;
-      calicoctl = pkgs.blackmatter-calicoctl;
-
-      # Vanilla Kubernetes default + latest (Linux-only)
-      kubelet = pkgs.blackmatter-kubelet;
-      kubelet-latest = pkgs.blackmatter-kubelet-latest;
-      kubeadm = pkgs.blackmatter-kubeadm;
-      kubeadm-latest = pkgs.blackmatter-kubeadm-latest;
-      kube-apiserver = pkgs.blackmatter-kube-apiserver;
-      kube-apiserver-latest = pkgs.blackmatter-kube-apiserver-latest;
-      kube-controller-manager = pkgs.blackmatter-kube-controller-manager;
-      kube-controller-manager-latest = pkgs.blackmatter-kube-controller-manager-latest;
-      kube-scheduler = pkgs.blackmatter-kube-scheduler;
-      kube-scheduler-latest = pkgs.blackmatter-kube-scheduler-latest;
-      kube-proxy = pkgs.blackmatter-kube-proxy;
-      kube-proxy-latest = pkgs.blackmatter-kube-proxy-latest;
-      etcd-server = pkgs.blackmatter-etcd-server;
-      etcd-server-latest = pkgs.blackmatter-etcd-server-latest;
-      containerd = pkgs.blackmatter-containerd;
-      containerd-latest = pkgs.blackmatter-containerd-latest;
-      runc = pkgs.blackmatter-runc;
-      runc-latest = pkgs.blackmatter-runc-latest;
-      k8s-cni-plugins = pkgs.blackmatter-k8s-cni-plugins;
-      k8s-cni-plugins-latest = pkgs.blackmatter-k8s-cni-plugins-latest;
-      crictl = pkgs.blackmatter-crictl;
-      crictl-latest = pkgs.blackmatter-crictl-latest;
-
-      # Container runtime tools (Linux-only)
-      nerdctl = pkgs.blackmatter-nerdctl;
-      buildkit = pkgs.blackmatter-buildkit;
-
-      # VictoriaMetrics (Linux-only due to complex patches)
-      victoriametrics = pkgs.blackmatter-victoriametrics;
-
-      # Network plugins (Linux-only)
-      cni-plugins = pkgs.blackmatter-cni-plugins;
-      flannel = pkgs.blackmatter-flannel;
-      cni-plugin-flannel = pkgs.blackmatter-cni-plugin-flannel;
-      multus-cni = pkgs.blackmatter-multus-cni;
-      calico-cni-plugin = pkgs.blackmatter-calico-cni-plugin;
-      calico-apiserver = pkgs.blackmatter-calico-apiserver;
-      calico-typha = pkgs.blackmatter-calico-typha;
-      calico-kube-controllers = pkgs.blackmatter-calico-kube-controllers;
-      calico-pod2daemon = pkgs.blackmatter-calico-pod2daemon;
-      confd-calico = pkgs.blackmatter-confd-calico;
-    }
-    # Versioned k3s + k8s packages (Linux-only) — k3s-1-30, kubelet-1-33, etc.
-    // nixpkgs.lib.optionalAttrs (builtins.elem system linuxSystems) (
-      nixpkgs.lib.listToAttrs (map (track: let
+      # Generate versioned package entries: name-1-30 → pkgs.blackmatter-name-1-30
+      mkVersionedPkgs = comps: lib.listToAttrs (lib.concatMap (track: let
         suffix = builtins.replaceStrings ["."] ["-"] track;
-      in {
-        name = "k3s-${suffix}";
-        value = pkgs.${"blackmatter-k3s-${suffix}"};
-      }) allTracks)
-      // nixpkgs.lib.listToAttrs (nixpkgs.lib.concatMap (track: let
-        suffix = builtins.replaceStrings ["."] ["-"] track;
-        trackSuffix = builtins.replaceStrings ["."] ["_"] track;
-        k8sComps = [
-          { pkg = "kubelet"; name = "kubelet"; }
-          { pkg = "kubeadm"; name = "kubeadm"; }
-          { pkg = "kube-apiserver"; name = "kube-apiserver"; }
-          { pkg = "kube-controller-manager"; name = "kube-controller-manager"; }
-          { pkg = "kube-scheduler"; name = "kube-scheduler"; }
-          { pkg = "kube-proxy"; name = "kube-proxy"; }
-          { pkg = "etcd-server"; name = "etcd-server"; }
-          { pkg = "containerd"; name = "containerd"; }
-          { pkg = "runc"; name = "runc"; }
-          { pkg = "k8s-cni-plugins"; name = "k8s-cni-plugins"; }
-          { pkg = "crictl"; name = "crictl"; }
-        ];
-      in map (c: {
-        name = "${c.name}-${suffix}";
-        value = pkgs.${"blackmatter-${c.pkg}-${suffix}"};
-      }) k8sComps) allTracks))
-    # Profile package sets (Linux-only)
-    // nixpkgs.lib.optionalAttrs (builtins.elem system linuxSystems)
-      ((nixpkgs.lib.mapAttrs' (name: _:
-        nixpkgs.lib.nameValuePair "k3s-profile-${name}" pkgs.${"blackmatter-k3s-profile-${name}"}
+      in map (name: {
+        name = "${name}-${suffix}";
+        value = pkgs.${"blackmatter-${name}-${suffix}"};
+      }) comps) allTracks);
+
+    in { default = pkgs.blackmatter-kubectl; }
+    // mkPkgsFrom crossPlatformTools
+    // lib.optionalAttrs isLinux (mkPkgsFrom linuxOnlyTools)
+    // lib.optionalAttrs isLinux (
+      mkVersionedPkgs [ "k3s" ] // mkVersionedPkgs k8sVersionedComponents)
+    // lib.optionalAttrs isLinux (
+      (lib.mapAttrs' (name: _:
+        lib.nameValuePair "k3s-profile-${name}" pkgs.${"blackmatter-k3s-profile-${name}"}
       ) profileDefs.profiles)
-      // (nixpkgs.lib.mapAttrs' (name: _:
-        nixpkgs.lib.nameValuePair "k8s-profile-${name}" pkgs.${"blackmatter-k8s-profile-${name}"}
+      // (lib.mapAttrs' (name: _:
+        lib.nameValuePair "k8s-profile-${name}" pkgs.${"blackmatter-k8s-profile-${name}"}
       ) profileDefs.profiles)));
 
     # ── Tests ───────────────────────────────────────────────────────
@@ -479,7 +284,7 @@
     tests = forEachLinuxSystem ({ pkgs, ... }: {
       unit = import ./tests/unit {
         lib = nixpkgs.lib;
-        inherit nixosHelpers testHelpers mkGoMonorepoSource;
+        inherit nixosHelpers testHelpers mkGoMonorepoSource mkGoMonorepoBinary mkVersionedOverlay;
       };
       hm-module = import ./tests/unit/hm-module.nix {
         lib = nixpkgs.lib;

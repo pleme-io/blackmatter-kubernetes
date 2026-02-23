@@ -2,22 +2,10 @@
 #
 # Watches for newly created Pods with no assigned node and selects
 # a node for them to run on.
-{ pkgs, k8sSrc }:
+{ pkgs, k8sSrc, mkGoMonorepoBinary }:
 
-pkgs.buildGoModule {
+mkGoMonorepoBinary pkgs k8sSrc {
   pname = "kube-scheduler";
-  inherit (k8sSrc) version src;
-
-  vendorHash = null;
-  subPackages = [ "cmd/kube-scheduler" ];
-  ldflags = k8sSrc.ldflags;
-  doCheck = false;
-
-  meta = {
-    description = "Kubernetes scheduler";
-    homepage = "https://kubernetes.io/docs/reference/command-line-tools-reference/kube-scheduler/";
-    license = pkgs.lib.licenses.asl20;
-    mainProgram = "kube-scheduler";
-    platforms = pkgs.lib.platforms.linux;
-  };
+  description = "Kubernetes scheduler";
+  homepage = "https://kubernetes.io/docs/reference/command-line-tools-reference/kube-scheduler/";
 }

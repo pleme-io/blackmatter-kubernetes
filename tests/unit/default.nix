@@ -6,7 +6,7 @@
 # Uses substrate's test helpers (mkTest, runTests, evalNixOSModule).
 #
 # Run: nix eval .#tests.unit
-{ lib, nixosHelpers, testHelpers, mkGoMonorepoSource }:
+{ lib, nixosHelpers, testHelpers, mkGoMonorepoSource, mkGoMonorepoBinary, mkVersionedOverlay }:
 
 let
   inherit (testHelpers) mkTest runTests evalNixOSModule;
@@ -53,7 +53,7 @@ let
   }).config;
 
   # Evaluate the k8s module with given config (lazy — don't force packages)
-  k8sModule = import ../../module/nixos/kubernetes { inherit nixosHelpers mkGoMonorepoSource; };
+  k8sModule = import ../../module/nixos/kubernetes { inherit nixosHelpers mkGoMonorepoSource mkGoMonorepoBinary; };
   evalK8sModule = config: evalNixOSModule {
     module = k8sModule;
     inherit config;
@@ -71,26 +71,58 @@ in runTests [
         && evaluated.options.services ? blackmatter)
     "services.blackmatter.k3s options should exist")
 
-  # ── Default value tests ────────────────────────────────────────────
+  # ── Default value tests (real evalModule) ──────────────────────────
   (mkTest "default-role-is-server"
-    true  # types.enum default is "server" — verified by option definition
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.role == "server")
     "default role should be server")
 
   (mkTest "default-cluster-cidr"
-    true  # default is "10.42.0.0/16" — verified by option definition
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.clusterCIDR == "10.42.0.0/16")
     "default clusterCIDR should be 10.42.0.0/16")
 
   (mkTest "default-service-cidr"
-    true  # default is "10.43.0.0/16"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.serviceCIDR == "10.43.0.0/16")
     "default serviceCIDR should be 10.43.0.0/16")
 
   (mkTest "default-cluster-dns"
-    true  # default is "10.43.0.10"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.clusterDNS == "10.43.0.10")
     "default clusterDNS should be 10.43.0.10")
 
   (mkTest "default-data-dir"
-    true  # default is "/var/lib/rancher/k3s"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.dataDir == "/var/lib/rancher/k3s")
     "default dataDir should be /var/lib/rancher/k3s")
+
+  (mkTest "default-distribution"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.distribution == "1.34")
+    "default distribution should be 1.34")
+
+  (mkTest "default-firewall-enabled"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.firewall.enable == true
+        && cfg.firewall.apiServerPort == 6443)
+    "firewall should be enabled by default with apiserver on 6443")
+
+  (mkTest "default-kernel-enabled"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.kernel.enable == true)
+    "kernel configuration should be enabled by default")
+
+  (mkTest "default-wait-for-dns"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.waitForDNS.enable == true
+        && cfg.waitForDNS.timeout == 30)
+    "waitForDNS should be enabled with 30 retries by default")
+
+  (mkTest "default-profile-null"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.profile == null)
+    "default profile should be null")
 
   # ── Flag construction tests ────────────────────────────────────────
   (mkTest "disable-generates-flags"
@@ -112,29 +144,16 @@ in runTests [
      == [ "--node-taint dedicated=gpu:NoSchedule" ])
     "nodeTaint should generate --node-taint flags")
 
-  # ── Firewall port tests ────────────────────────────────────────────
+  # ── Firewall port tests (option defaults) ──────────────────────────
   (mkTest "firewall-default-udp"
-    ([ 8472 ] == [ 8472 ])
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.firewall.extraUDPPorts == [ 8472 ])
     "default UDP ports should include VXLAN 8472")
 
   (mkTest "firewall-default-trusted"
-    ([ "cni0" "flannel.1" ] == [ "cni0" "flannel.1" ])
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.firewall.trustedInterfaces == [ "cni0" "flannel.1" ])
     "default trusted interfaces should include cni0 and flannel.1")
-
-  # ── Kernel module tests ────────────────────────────────────────────
-  (mkTest "kernel-base-modules"
-    (lib.elem "overlay" [ "overlay" "br_netfilter" ]
-     && lib.elem "br_netfilter" [ "overlay" "br_netfilter" ])
-    "base kernel modules should include overlay and br_netfilter")
-
-  # ── Sysctl tests ───────────────────────────────────────────────────
-  (mkTest "sysctl-ip-forward"
-    ({ "net.ipv4.ip_forward" = 1; }."net.ipv4.ip_forward" == 1)
-    "sysctl should enable ip_forward")
-
-  (mkTest "sysctl-bridge-nf-call"
-    ({ "net.bridge.bridge-nf-call-iptables" = 1; }."net.bridge.bridge-nf-call-iptables" == 1)
-    "sysctl should enable bridge-nf-call-iptables")
 
   # ── Distribution system tests ──────────────────────────────────────
   (mkTest "distribution-tracks-exist"
@@ -804,4 +823,866 @@ in runTests [
   in mkTest "fluxcd-bootstrap-service-created"
     (evaluated.systemd.services ? fluxcd-bootstrap)
     "should create fluxcd-bootstrap systemd service")
+
+  # ── mkGoMonorepoBinary factory tests ──────────────────────────────────
+
+  (let
+    monoSrc = mkSource {
+      versions = versionRegistry."1.34";
+      hashes = k8sHashFiles."1.34";
+    };
+    # Test that the factory produces a valid derivation-like attrset
+    # (we can't fully evaluate without real pkgs, but can test the function signature)
+    mockBuildGoModule = args: args;
+    mockPkgsWithBuild = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    result = mkGoMonorepoBinary mockPkgsWithBuild monoSrc {
+      pname = "kubelet";
+      description = "Kubernetes node agent";
+      homepage = "https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/";
+    };
+  in mkTest "monorepo-binary-factory-pname"
+    (result.pname == "kubelet")
+    "mkGoMonorepoBinary should set pname correctly")
+
+  (let
+    monoSrc = mkSource {
+      versions = versionRegistry."1.34";
+      hashes = k8sHashFiles."1.34";
+    };
+    mockBuildGoModule = args: args;
+    mockPkgsWithBuild = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    result = mkGoMonorepoBinary mockPkgsWithBuild monoSrc {
+      pname = "kubelet";
+      description = "Kubernetes node agent";
+    };
+  in mkTest "monorepo-binary-factory-default-subpackages"
+    (result.subPackages == [ "cmd/kubelet" ])
+    "mkGoMonorepoBinary should default subPackages to cmd/<pname>")
+
+  (let
+    monoSrc = mkSource {
+      versions = versionRegistry."1.34";
+      hashes = k8sHashFiles."1.34";
+    };
+    mockBuildGoModule = args: args;
+    mockPkgsWithBuild = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    result = mkGoMonorepoBinary mockPkgsWithBuild monoSrc {
+      pname = "kubelet";
+      description = "Kubernetes node agent";
+    };
+  in mkTest "monorepo-binary-factory-version"
+    (result.version == "1.34.3")
+    "mkGoMonorepoBinary should inherit version from monoSrc")
+
+  (let
+    monoSrc = mkSource {
+      versions = versionRegistry."1.34";
+      hashes = k8sHashFiles."1.34";
+    };
+    mockBuildGoModule = args: args;
+    mockPkgsWithBuild = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    result = mkGoMonorepoBinary mockPkgsWithBuild monoSrc {
+      pname = "kubelet";
+      description = "Kubernetes node agent";
+    };
+  in mkTest "monorepo-binary-factory-vendorHash-null"
+    (result.vendorHash == null)
+    "mkGoMonorepoBinary should set vendorHash to null (monorepo vendored)")
+
+  (let
+    monoSrc = mkSource {
+      versions = versionRegistry."1.34";
+      hashes = k8sHashFiles."1.34";
+    };
+    mockBuildGoModule = args: args;
+    mockPkgsWithBuild = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      installShellFiles = "installShellFiles";
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    result = mkGoMonorepoBinary mockPkgsWithBuild monoSrc {
+      pname = "kubeadm";
+      description = "Kubernetes cluster bootstrap tool";
+      completions = { install = true; command = "kubeadm"; };
+    };
+  in mkTest "monorepo-binary-factory-completions"
+    (lib.elem "installShellFiles" result.nativeBuildInputs
+     && lib.hasInfix "kubeadm" result.postInstall)
+    "mkGoMonorepoBinary should add completions when specified")
+
+  (let
+    monoSrc = mkSource {
+      versions = versionRegistry."1.35";
+      hashes = k8sHashFiles."1.35";
+    };
+    mockBuildGoModule = args: args;
+    mockPkgsWithBuild = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    result = mkGoMonorepoBinary mockPkgsWithBuild monoSrc {
+      pname = "kube-apiserver";
+      description = "Kubernetes API server";
+    };
+  in mkTest "monorepo-binary-factory-1.35"
+    (result.pname == "kube-apiserver" && result.version == "1.35.1")
+    "mkGoMonorepoBinary should work with 1.35 track")
+
+  # ── mkVersionedOverlay factory tests ──────────────────────────────────
+
+  (let
+    mockSrc = {
+      foo_1_34 = "pkg-foo-1.34";
+      foo_1_35 = "pkg-foo-1.35";
+    };
+    result = mkVersionedOverlay {
+      inherit lib;
+      tracks = [ "1.34" "1.35" ];
+      defaultTrack = "1.34";
+      latestTrack = "1.35";
+      components = { foo = { src = mockSrc; }; };
+    };
+  in mkTest "versioned-overlay-versioned-entries"
+    (result ? "blackmatter-foo-1-34" && result ? "blackmatter-foo-1-35"
+     && result."blackmatter-foo-1-34" == "pkg-foo-1.34"
+     && result."blackmatter-foo-1-35" == "pkg-foo-1.35")
+    "mkVersionedOverlay should generate versioned entries")
+
+  (let
+    mockSrc = {
+      foo_1_34 = "pkg-foo-1.34";
+      foo_1_35 = "pkg-foo-1.35";
+    };
+    result = mkVersionedOverlay {
+      inherit lib;
+      tracks = [ "1.34" "1.35" ];
+      defaultTrack = "1.34";
+      latestTrack = "1.35";
+      components = { foo = { src = mockSrc; }; };
+    };
+  in mkTest "versioned-overlay-default-alias"
+    (result ? "blackmatter-foo" && result."blackmatter-foo" == "pkg-foo-1.34")
+    "mkVersionedOverlay should create default alias pointing to defaultTrack")
+
+  (let
+    mockSrc = {
+      foo_1_34 = "pkg-foo-1.34";
+      foo_1_35 = "pkg-foo-1.35";
+    };
+    result = mkVersionedOverlay {
+      inherit lib;
+      tracks = [ "1.34" "1.35" ];
+      defaultTrack = "1.34";
+      latestTrack = "1.35";
+      components = { foo = { src = mockSrc; }; };
+    };
+  in mkTest "versioned-overlay-latest-alias"
+    (result ? "blackmatter-foo-latest" && result."blackmatter-foo-latest" == "pkg-foo-1.35")
+    "mkVersionedOverlay should create -latest alias pointing to latestTrack")
+
+  (let
+    mockSrc = {
+      bar_1_34 = "pkg-bar-1.34";
+      bar_1_35 = "pkg-bar-1.35";
+    };
+    result = mkVersionedOverlay {
+      inherit lib;
+      tracks = [ "1.34" "1.35" ];
+      defaultTrack = "1.34";
+      latestTrack = "1.35";
+      components = { bar = { src = mockSrc; overlayName = "bar-server"; }; };
+    };
+  in mkTest "versioned-overlay-overlay-name"
+    (result ? "blackmatter-bar-server-1-34"
+     && result ? "blackmatter-bar-server"
+     && result ? "blackmatter-bar-server-latest")
+    "mkVersionedOverlay should use overlayName for output attribute names")
+
+  (let
+    mockSrc = {
+      k3s_1_34 = "pkg-k3s-1.34";
+      k3s_1_35 = "pkg-k3s-1.35";
+    };
+    result = mkVersionedOverlay {
+      inherit lib;
+      tracks = [ "1.34" "1.35" ];
+      defaultTrack = "1.34";
+      latestTrack = "1.35";
+      components = { k3s = { src = mockSrc; srcAttr = s: "k3s_${s}"; }; };
+    };
+  in mkTest "versioned-overlay-custom-srcattr"
+    (result ? "blackmatter-k3s-1-34"
+     && result."blackmatter-k3s-1-34" == "pkg-k3s-1.34")
+    "mkVersionedOverlay should support custom srcAttr function")
+
+  (let
+    mockSrc = {
+      foo_1_34 = "pkg-foo-1.34";
+      foo_1_35 = "pkg-foo-1.35";
+    };
+    result = mkVersionedOverlay {
+      inherit lib;
+      tracks = [ "1.34" "1.35" ];
+      prefix = "custom-";
+      defaultTrack = "1.34";
+      latestTrack = "1.35";
+      components = { foo = { src = mockSrc; }; };
+    };
+  in mkTest "versioned-overlay-custom-prefix"
+    (result ? "custom-foo-1-34" && result ? "custom-foo" && result ? "custom-foo-latest")
+    "mkVersionedOverlay should support custom prefix")
+
+  (let
+    mockSrc = {
+      a_1_30 = "a-1.30"; a_1_31 = "a-1.31"; a_1_32 = "a-1.32";
+      a_1_33 = "a-1.33"; a_1_34 = "a-1.34"; a_1_35 = "a-1.35";
+      b_1_30 = "b-1.30"; b_1_31 = "b-1.31"; b_1_32 = "b-1.32";
+      b_1_33 = "b-1.33"; b_1_34 = "b-1.34"; b_1_35 = "b-1.35";
+    };
+    result = mkVersionedOverlay {
+      inherit lib;
+      tracks = allTracks;
+      defaultTrack = "1.34";
+      latestTrack = "1.35";
+      components = {
+        a = { src = mockSrc; };
+        b = { src = mockSrc; };
+      };
+    };
+    # 6 tracks × 2 components = 12 versioned + 2 default + 2 latest = 16
+    names = lib.attrNames result;
+  in mkTest "versioned-overlay-entry-count"
+    (lib.length names == 16)
+    "mkVersionedOverlay should generate correct number of entries (6×2 + 2 + 2 = 16)")
+
+  # ── mkRuntimeComponent factory tests ──────────────────────────────────
+
+  (let
+    mockBuildGoModule = args: args;
+    mockFetch = _: "/nix/store/mock-src";
+    testPkgs = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      fetchFromGitHub = mockFetch;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    mkRC = import ../../pkgs/kubernetes/mk-runtime-component.nix { pkgs = testPkgs; };
+    result = mkRC {
+      pname = "test-component";
+      version = "1.2.3";
+      owner = "test-org";
+      repo = "test-repo";
+      hashes = { "1.2.3" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; };
+      description = "Test component";
+    };
+  in mkTest "runtime-component-factory-pname"
+    (result.pname == "test-component" && result.version == "1.2.3")
+    "mkRuntimeComponent should set pname and version correctly")
+
+  (let
+    mockBuildGoModule = args: args;
+    mockFetch = _: "/nix/store/mock-src";
+    testPkgs = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      fetchFromGitHub = mockFetch;
+      installShellFiles = null;
+      pkg-config = "pkg-config";
+      libseccomp = "libseccomp";
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    mkRC = import ../../pkgs/kubernetes/mk-runtime-component.nix { pkgs = testPkgs; };
+    result = mkRC {
+      pname = "runc";
+      version = "1.2.6";
+      owner = "opencontainers";
+      repo = "runc";
+      hashes = { "1.2.6" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; };
+      vendorHash = null;
+      buildInputs = [ "libseccomp" ];
+      nativeBuildInputs = [ "pkg-config" ];
+      env = { CGO_ENABLED = "1"; };
+      subPackages = [ "." ];
+      description = "OCI container runtime";
+    };
+  in mkTest "runtime-component-factory-build-inputs"
+    (result.buildInputs == [ "libseccomp" ]
+     && lib.elem "pkg-config" result.nativeBuildInputs
+     && result.env.CGO_ENABLED == "1"
+     && result.subPackages == [ "." ])
+    "mkRuntimeComponent should pass through buildInputs, env, and subPackages")
+
+  (let
+    mockBuildGoModule = args: args;
+    mockFetch = _: "/nix/store/mock-src";
+    testPkgs = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      fetchFromGitHub = mockFetch;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    mkRC = import ../../pkgs/kubernetes/mk-runtime-component.nix { pkgs = testPkgs; };
+    result = mkRC {
+      pname = "etcd-server";
+      version = "3.6.7";
+      owner = "etcd-io";
+      repo = "etcd";
+      hashes = { "3.6.7" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; };
+      vendorHashes = { "3.6.7" = "sha256-test-vendor-hash"; };
+      modRoot = "server";
+      description = "etcd server";
+    };
+  in mkTest "runtime-component-factory-vendor-hashes"
+    (result.vendorHash == "sha256-test-vendor-hash"
+     && result.modRoot == "server")
+    "mkRuntimeComponent should support vendorHashes map and modRoot")
+
+  (let
+    mockBuildGoModule = args: args;
+    mockFetch = _: "/nix/store/mock-src";
+    testPkgs = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      fetchFromGitHub = mockFetch;
+      installShellFiles = "installShellFiles";
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    mkRC = import ../../pkgs/kubernetes/mk-runtime-component.nix { pkgs = testPkgs; };
+    result = mkRC {
+      pname = "crictl";
+      version = "1.34.0";
+      owner = "kubernetes-sigs";
+      repo = "cri-tools";
+      hashes = { "1.34.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; };
+      completions = { install = true; command = "crictl"; };
+      description = "CRI CLI";
+    };
+  in mkTest "runtime-component-factory-completions"
+    (lib.elem "installShellFiles" result.nativeBuildInputs
+     && lib.hasInfix "crictl" result.postInstall)
+    "mkRuntimeComponent should support shell completions")
+
+  # ── k3s module enable=true tests ────────────────────────────────────
+  # Tests that cfg.enable activates kernel, sysctl, firewall, and assertions.
+  # Only accesses config paths that don't force package evaluation.
+
+  (mkTest "k3s-enable-kernel-modules"
+    (let cfg = evalModule { enable = true; };
+     in lib.elem "overlay" cfg.boot.kernelModules
+        && lib.elem "br_netfilter" cfg.boot.kernelModules)
+    "k3s enable=true should configure kernel modules")
+
+  (mkTest "k3s-enable-sysctl"
+    (let cfg = evalModule { enable = true; };
+     in cfg.boot.kernel.sysctl."net.ipv4.ip_forward" == 1
+        && cfg.boot.kernel.sysctl."net.bridge.bridge-nf-call-iptables" == 1
+        && cfg.boot.kernel.sysctl."net.bridge.bridge-nf-call-ip6tables" == 1)
+    "k3s enable=true should configure sysctl for forwarding and bridge nf")
+
+  (mkTest "k3s-enable-firewall-server"
+    (let fw = (evalModule { enable = true; }).networking.firewall;
+     in lib.elem 6443 fw.allowedTCPPorts
+        && lib.elem 10250 fw.allowedTCPPorts
+        && fw.allowedUDPPorts == [ 8472 ])
+    "k3s enable=true server should open apiserver, kubelet, and VXLAN ports")
+
+  (mkTest "k3s-enable-firewall-trusted"
+    (let fw = (evalModule { enable = true; }).networking.firewall;
+     in fw.trustedInterfaces == [ "cni0" "flannel.1" ])
+    "k3s enable=true should trust default CNI interfaces")
+
+  (mkTest "k3s-enable-assertions-server"
+    (let asserts = (evalModule { enable = true; }).assertions;
+     in lib.all (a: a.assertion) asserts)
+    "k3s enable=true server should pass all assertions")
+
+  (mkTest "k3s-enable-kernel-no-extra"
+    (let mods = (evalModule { enable = true; }).boot.kernelModules;
+     in mods == [ "overlay" "br_netfilter" ])
+    "k3s enable=true without profile should only have base kernel modules")
+
+  # ── k3s profile application tests ──────────────────────────────────
+  # Verifies that profiles actually configure firewall, kernel, disable list,
+  # and extra flags when enable=true.
+
+  (mkTest "k3s-profile-cilium-kernel-modules"
+    (let mods = (evalModule { enable = true; profile = "cilium-standard"; }).boot.kernelModules;
+     in lib.elem "ip_tables" mods
+        && lib.elem "xt_socket" mods
+        && lib.elem "xt_mark" mods
+        && lib.elem "xt_CT" mods
+        && lib.elem "overlay" mods
+        && lib.elem "br_netfilter" mods)
+    "cilium-standard profile should add eBPF kernel modules alongside base modules")
+
+  (mkTest "k3s-profile-cilium-firewall"
+    (let fw = (evalModule { enable = true; profile = "cilium-standard"; }).networking.firewall;
+     in lib.elem 4240 fw.allowedTCPPorts
+        && lib.elem 4244 fw.allowedTCPPorts)
+    "cilium-standard profile should open health and hubble TCP ports")
+
+  (mkTest "k3s-profile-cilium-trusted-interfaces"
+    (let fw = (evalModule { enable = true; profile = "cilium-standard"; }).networking.firewall;
+     in lib.elem "cilium_host" fw.trustedInterfaces
+        && lib.elem "cilium_net" fw.trustedInterfaces
+        && lib.elem "lxc+" fw.trustedInterfaces)
+    "cilium-standard profile should trust cilium interfaces")
+
+  (mkTest "k3s-profile-cilium-disable-list"
+    (let cfg = (evalModule { enable = true; profile = "cilium-standard"; }).services.blackmatter.k3s;
+     in lib.elem "servicelb" cfg.disable)
+    "cilium-standard profile should disable servicelb")
+
+  (mkTest "k3s-profile-cilium-extra-flags"
+    (let cfg = (evalModule { enable = true; profile = "cilium-standard"; }).services.blackmatter.k3s;
+     in lib.elem "--flannel-backend=none" cfg.extraFlags
+        && lib.elem "--disable-network-policy" cfg.extraFlags
+        && lib.elem "--disable-kube-proxy" cfg.extraFlags)
+    "cilium-standard profile should set flannel-backend=none, disable-network-policy, and disable-kube-proxy")
+
+  (mkTest "k3s-profile-flannel-minimal-disable"
+    (let cfg = (evalModule { enable = true; profile = "flannel-minimal"; }).services.blackmatter.k3s;
+     in lib.elem "traefik" cfg.disable
+        && lib.elem "servicelb" cfg.disable
+        && lib.elem "metrics-server" cfg.disable
+        && lib.elem "local-storage" cfg.disable)
+    "flannel-minimal profile should disable traefik, servicelb, metrics-server, local-storage")
+
+  (mkTest "k3s-profile-calico-firewall"
+    (let fw = (evalModule { enable = true; profile = "calico-standard"; }).networking.firewall;
+     in lib.elem 179 fw.allowedTCPPorts
+        && lib.elem 5473 fw.allowedTCPPorts
+        && lib.elem 4789 fw.allowedUDPPorts
+        && lib.elem 8472 fw.allowedUDPPorts)
+    "calico-standard profile should open BGP, typha, and VXLAN ports")
+
+  (mkTest "k3s-profile-calico-trusted-interfaces"
+    (let fw = (evalModule { enable = true; profile = "calico-standard"; }).networking.firewall;
+     in lib.elem "cali+" fw.trustedInterfaces
+        && lib.elem "tunl0" fw.trustedInterfaces
+        && lib.elem "vxlan.calico" fw.trustedInterfaces)
+    "calico-standard profile should trust calico interfaces")
+
+  (mkTest "k3s-profile-flannel-standard-no-extra-flags"
+    (let cfg = (evalModule { enable = true; profile = "flannel-standard"; }).services.blackmatter.k3s;
+     in cfg.extraFlags == [])
+    "flannel-standard profile should not set any extra flags")
+
+  (mkTest "k3s-profile-flannel-standard-default-firewall"
+    (let fw = (evalModule { enable = true; profile = "flannel-standard"; }).networking.firewall;
+     in fw.trustedInterfaces == [ "cni0" "flannel.1" ]
+        && fw.allowedUDPPorts == [ 8472 ])
+    "flannel-standard profile should keep default flannel firewall settings")
+
+  # ── k8s module enable=true tests ────────────────────────────────────
+  # Tests that k8s module enable=true activates kernel, sysctl, firewall,
+  # assertions, and tmpfiles. Avoids environment.systemPackages (needs real pkgs).
+
+  (mkTest "k8s-enable-kernel-modules"
+    (let cfg = (evalK8sModule { enable = true; }).config;
+     in lib.elem "overlay" cfg.boot.kernelModules
+        && lib.elem "br_netfilter" cfg.boot.kernelModules
+        && lib.elem "ip_vs" cfg.boot.kernelModules
+        && lib.elem "ip_vs_rr" cfg.boot.kernelModules
+        && lib.elem "ip_vs_wrr" cfg.boot.kernelModules
+        && lib.elem "ip_vs_sh" cfg.boot.kernelModules)
+    "k8s enable=true should configure base + IPVS kernel modules")
+
+  (mkTest "k8s-enable-sysctl"
+    (let cfg = (evalK8sModule { enable = true; }).config;
+     in cfg.boot.kernel.sysctl."net.ipv4.ip_forward" == 1
+        && cfg.boot.kernel.sysctl."net.bridge.bridge-nf-call-iptables" == 1
+        && cfg.boot.kernel.sysctl."net.bridge.bridge-nf-call-ip6tables" == 1)
+    "k8s enable=true should configure sysctl for forwarding and bridge nf")
+
+  (mkTest "k8s-enable-firewall-controlplane"
+    (let fw = (evalK8sModule { enable = true; }).config.networking.firewall;
+     in lib.elem 6443 fw.allowedTCPPorts
+        && lib.elem 10250 fw.allowedTCPPorts)
+    "k8s enable=true control-plane should open apiserver and kubelet ports")
+
+  (mkTest "k8s-enable-assertions-controlplane"
+    (let asserts = (evalK8sModule { enable = true; }).config.assertions;
+     in lib.all (a: a.assertion) asserts)
+    "k8s enable=true control-plane should pass all assertions")
+
+  (mkTest "k8s-enable-tmpfiles"
+    (let rules = (evalK8sModule { enable = true; }).config.systemd.tmpfiles.rules;
+     in lib.any (r: lib.hasInfix "/var/lib/kubernetes" r) rules
+        && lib.any (r: lib.hasInfix "pki" r) rules)
+    "k8s enable=true should create data and PKI directories via tmpfiles")
+
+  # ── k8s profile application tests ──────────────────────────────────
+
+  (mkTest "k8s-profile-cilium-disable-kube-proxy"
+    (let cfg = (evalK8sModule { enable = true; profile = "cilium-standard"; }).config.services.blackmatter.kubernetes;
+     in cfg.controlPlane.disableKubeProxy == true)
+    "cilium-standard profile should disable kube-proxy in k8s module")
+
+  (mkTest "k8s-profile-cilium-kernel-modules"
+    (let mods = (evalK8sModule { enable = true; profile = "cilium-standard"; }).config.boot.kernelModules;
+     in lib.elem "ip_tables" mods
+        && lib.elem "xt_socket" mods
+        && lib.elem "xt_mark" mods
+        && lib.elem "xt_CT" mods
+        && lib.elem "overlay" mods)
+    "cilium-standard profile should add eBPF kernel modules in k8s module")
+
+  (mkTest "k8s-profile-cilium-firewall"
+    (let fw = (evalK8sModule { enable = true; profile = "cilium-standard"; }).config.networking.firewall;
+     in lib.elem 4240 fw.allowedTCPPorts
+        && lib.elem 4244 fw.allowedTCPPorts
+        && lib.elem "cilium_host" fw.trustedInterfaces
+        && lib.elem "lxc+" fw.trustedInterfaces)
+    "cilium-standard profile should configure cilium firewall in k8s module")
+
+  (mkTest "k8s-profile-calico-firewall"
+    (let fw = (evalK8sModule { enable = true; profile = "calico-standard"; }).config.networking.firewall;
+     in lib.elem 179 fw.allowedTCPPorts
+        && lib.elem 5473 fw.allowedTCPPorts
+        && lib.elem "cali+" fw.trustedInterfaces)
+    "calico-standard profile should open BGP/typha ports in k8s module")
+
+  (mkTest "k8s-profile-flannel-no-disable-kube-proxy"
+    (let cfg = (evalK8sModule { enable = true; profile = "flannel-standard"; }).config.services.blackmatter.kubernetes;
+     in cfg.controlPlane.disableKubeProxy == false)
+    "flannel-standard profile should not disable kube-proxy in k8s module")
+
+  # ── Track system component tests ────────────────────────────────────
+
+  (let
+    trackTestPkgs = mockPkgs // {
+      buildGoModule = args: args;
+      fetchFromGitHub = _: null;
+      installShellFiles = "installShellFiles";
+      btrfs-progs = "btrfs-progs";
+      libseccomp = "libseccomp";
+      pkg-config = "pkg-config";
+    };
+    k8sTrackPkgs = import ../../pkgs/kubernetes {
+      pkgs = trackTestPkgs;
+      inherit mkGoMonorepoSource mkGoMonorepoBinary;
+    };
+    track = k8sTrackPkgs.track_1_34;
+  in mkTest "track-system-12-components-per-track"
+    (lib.length (lib.attrNames track) == 12)
+    "each k8s track should produce exactly 12 components")
+
+  (let
+    trackTestPkgs = mockPkgs // {
+      buildGoModule = args: args;
+      fetchFromGitHub = _: null;
+      installShellFiles = "installShellFiles";
+      btrfs-progs = "btrfs-progs";
+      libseccomp = "libseccomp";
+      pkg-config = "pkg-config";
+    };
+    k8sTrackPkgs = import ../../pkgs/kubernetes {
+      pkgs = trackTestPkgs;
+      inherit mkGoMonorepoSource mkGoMonorepoBinary;
+    };
+    track = k8sTrackPkgs.track_1_34;
+    expectedComponents = [ "cni-plugins" "containerd" "crictl" "etcd"
+                           "kube-apiserver" "kube-controller-manager" "kube-proxy"
+                           "kube-scheduler" "kubeadm" "kubectl" "kubelet" "runc" ];
+    actualComponents = lib.sort (a: b: a < b) (lib.attrNames track);
+  in mkTest "track-system-component-names"
+    (actualComponents == expectedComponents)
+    "k8s track should contain all 12 expected components (including kubectl)")
+
+  (let
+    trackTestPkgs = mockPkgs // {
+      buildGoModule = args: args;
+      fetchFromGitHub = _: null;
+      installShellFiles = "installShellFiles";
+      btrfs-progs = "btrfs-progs";
+      libseccomp = "libseccomp";
+      pkg-config = "pkg-config";
+    };
+    k8sTrackPkgs = import ../../pkgs/kubernetes {
+      pkgs = trackTestPkgs;
+      inherit mkGoMonorepoSource mkGoMonorepoBinary;
+    };
+  in mkTest "track-system-all-tracks-have-components"
+    (lib.all (t:
+      let track = k8sTrackPkgs.${"track_${builtins.replaceStrings ["."] ["_"] t}"};
+      in lib.length (lib.attrNames track) == 12
+    ) allTracks)
+    "all 6 k8s tracks should each have 12 components")
+
+  (let
+    trackTestPkgs = mockPkgs // {
+      buildGoModule = args: args;
+      fetchFromGitHub = _: null;
+      installShellFiles = "installShellFiles";
+      btrfs-progs = "btrfs-progs";
+      libseccomp = "libseccomp";
+      pkg-config = "pkg-config";
+    };
+    k8sTrackPkgs = import ../../pkgs/kubernetes {
+      pkgs = trackTestPkgs;
+      inherit mkGoMonorepoSource mkGoMonorepoBinary;
+    };
+    # kubectl should use cross-platform (unix) support
+    kubectl = k8sTrackPkgs.track_1_34.kubectl;
+  in mkTest "track-system-kubectl-cross-platform"
+    (kubectl.meta.platforms == lib.platforms.unix)
+    "kubectl in track system should support unix platforms (macOS + Linux)")
+
+  (let
+    trackTestPkgs = mockPkgs // {
+      buildGoModule = args: args;
+      fetchFromGitHub = _: null;
+      installShellFiles = "installShellFiles";
+      btrfs-progs = "btrfs-progs";
+      libseccomp = "libseccomp";
+      pkg-config = "pkg-config";
+    };
+    k8sTrackPkgs = import ../../pkgs/kubernetes {
+      pkgs = trackTestPkgs;
+      inherit mkGoMonorepoSource mkGoMonorepoBinary;
+    };
+    # Flat exports should have versioned names
+    flatNames = lib.attrNames k8sTrackPkgs;
+  in mkTest "track-system-flat-exports"
+    (lib.elem "kubectl_1_34" flatNames
+     && lib.elem "kubelet_1_34" flatNames
+     && lib.elem "etcd_1_35" flatNames
+     && lib.elem "track_1_30" flatNames
+     && lib.elem "track_1_35" flatNames)
+    "k8s packages should export flat versioned names and track attrsets")
+
+  # ── k3s track name generation ───────────────────────────────────────
+
+  (mkTest "k3s-track-name-generation"
+    (let
+      names = map (track: "k3s_${builtins.replaceStrings ["."] ["_"] track}") allTracks;
+    in names == [ "k3s_1_30" "k3s_1_31" "k3s_1_32" "k3s_1_33" "k3s_1_34" "k3s_1_35" ])
+    "k3s genAttrs should produce correct track names for all 6 tracks")
+
+  # ── Etcd hash deduplication tests ───────────────────────────────────
+
+  (mkTest "etcd-hash-dedup-covers-all-versions"
+    (let
+      etcdHashes = import ../../pkgs/kubernetes/etcd-hashes.nix;
+      allEtcdVersions = lib.unique (map (t: (versionRegistry.${t}).etcdVersion) allTracks);
+    in lib.all (v: etcdHashes ? ${v}) allEtcdVersions)
+    "shared etcd-hashes.nix should cover all etcd versions from the registry")
+
+  (mkTest "etcd-hash-dedup-server-uses-shared"
+    (let
+      etcdHashes = import ../../pkgs/kubernetes/etcd-hashes.nix;
+    in etcdHashes ? "3.5.15" && etcdHashes ? "3.5.24" && etcdHashes ? "3.6.7")
+    "shared etcd-hashes.nix should have hashes for all etcd versions (3.5.15, 3.5.24, 3.6.7)")
+
+  (mkTest "etcd-tools-version-from-registry"
+    (let version = versionRegistry."1.35".etcdVersion;
+     in version == "3.6.7")
+    "etcd tools should resolve version from shared registry (1.35 → 3.6.7)")
+
+  # ── mkGoMonorepoBinary additional edge cases ─────────────────────────
+
+  (let
+    monoSrc = mkSource {
+      versions = versionRegistry."1.34";
+      hashes = k8sHashFiles."1.34";
+    };
+    mockBuildGoModule = args: args;
+    mockPkgsWithBuild = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; unix = [ "x86_64-linux" "x86_64-darwin" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    result = mkGoMonorepoBinary mockPkgsWithBuild monoSrc {
+      pname = "kubectl";
+      description = "Kubernetes CLI";
+      platforms = mockPkgsWithBuild.platforms.unix;
+    };
+  in mkTest "monorepo-binary-factory-custom-platforms"
+    (result.meta.platforms == [ "x86_64-linux" "x86_64-darwin" ])
+    "mkGoMonorepoBinary should support custom platforms parameter")
+
+  (let
+    monoSrc = mkSource {
+      versions = versionRegistry."1.34";
+      hashes = k8sHashFiles."1.34";
+    };
+    mockBuildGoModule = args: args;
+    mockPkgsWithBuild = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    result = mkGoMonorepoBinary mockPkgsWithBuild monoSrc {
+      pname = "kubelet";
+      description = "Kubernetes node agent";
+    };
+  in mkTest "monorepo-binary-factory-no-completions-no-postinstall"
+    (result.postInstall == "")
+    "mkGoMonorepoBinary without completions should have empty postInstall")
+
+  (let
+    monoSrc = mkSource {
+      versions = versionRegistry."1.34";
+      hashes = k8sHashFiles."1.34";
+    };
+    mockBuildGoModule = args: args;
+    mockPkgsWithBuild = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    result = mkGoMonorepoBinary mockPkgsWithBuild monoSrc {
+      pname = "kube-apiserver";
+      description = "Kubernetes API server";
+    };
+  in mkTest "monorepo-binary-factory-mainprogram"
+    (result.meta.mainProgram == "kube-apiserver")
+    "mkGoMonorepoBinary mainProgram should default to pname")
+
+  # ── mkRuntimeComponent additional edge cases ─────────────────────────
+
+  (let
+    mockBuildGoModule = args: args;
+    mockFetch = _: "/nix/store/mock-src";
+    testPkgs = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      fetchFromGitHub = mockFetch;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    mkRC = import ../../pkgs/kubernetes/mk-runtime-component.nix { pkgs = testPkgs; };
+    result = mkRC {
+      pname = "test-default-ldflags";
+      version = "1.0.0";
+      owner = "test";
+      repo = "test";
+      hashes = { "1.0.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; };
+      description = "Test default ldflags";
+    };
+  in mkTest "runtime-component-factory-default-ldflags"
+    (result.ldflags == [ "-s" "-w" ])
+    "mkRuntimeComponent should default to -s -w ldflags")
+
+  (let
+    mockBuildGoModule = args: args;
+    mockFetch = _: "/nix/store/mock-src";
+    testPkgs = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      fetchFromGitHub = mockFetch;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    mkRC = import ../../pkgs/kubernetes/mk-runtime-component.nix { pkgs = testPkgs; };
+    result = mkRC {
+      pname = "etcd-server";
+      version = "3.6.7";
+      owner = "etcd-io";
+      repo = "etcd";
+      hashes = { "3.6.7" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; };
+      description = "etcd server";
+    };
+  in mkTest "runtime-component-factory-mainprogram-default"
+    (result.meta.mainProgram == "etcd-server")
+    "mkRuntimeComponent mainProgram should default to pname")
+
+  (let
+    mockBuildGoModule = args: args;
+    mockFetch = _: "/nix/store/mock-src";
+    testPkgs = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      fetchFromGitHub = mockFetch;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    mkRC = import ../../pkgs/kubernetes/mk-runtime-component.nix { pkgs = testPkgs; };
+    result = mkRC {
+      pname = "test-no-homepage";
+      version = "1.0.0";
+      owner = "test";
+      repo = "test";
+      hashes = { "1.0.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; };
+      description = "Test no homepage";
+    };
+  in mkTest "runtime-component-factory-no-homepage"
+    (!(result.meta ? homepage))
+    "mkRuntimeComponent with homepage=null should not include homepage in meta")
+
+  (let
+    mockBuildGoModule = args: args;
+    mockFetch = _: "/nix/store/mock-src";
+    testPkgs = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      fetchFromGitHub = mockFetch;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    mkRC = import ../../pkgs/kubernetes/mk-runtime-component.nix { pkgs = testPkgs; };
+    result = mkRC {
+      pname = "test-with-homepage";
+      version = "1.0.0";
+      owner = "test";
+      repo = "test";
+      hashes = { "1.0.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; };
+      homepage = "https://example.com";
+      description = "Test with homepage";
+    };
+  in mkTest "runtime-component-factory-with-homepage"
+    (result.meta ? homepage && result.meta.homepage == "https://example.com")
+    "mkRuntimeComponent with homepage should include it in meta")
+
+  (let
+    mockBuildGoModule = args: args;
+    mockFetch = _: "/nix/store/mock-src";
+    testPkgs = mockPkgs // {
+      buildGoModule = mockBuildGoModule;
+      fetchFromGitHub = mockFetch;
+      installShellFiles = null;
+      platforms = { linux = [ "x86_64-linux" ]; };
+      licenses = { asl20 = "asl20"; };
+    };
+    mkRC = import ../../pkgs/kubernetes/mk-runtime-component.nix { pkgs = testPkgs; };
+    result = mkRC {
+      pname = "test-default-platforms";
+      version = "1.0.0";
+      owner = "test";
+      repo = "test";
+      hashes = { "1.0.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; };
+      description = "Test default platforms";
+    };
+  in mkTest "runtime-component-factory-default-platforms"
+    (result.meta.platforms == lib.platforms.linux)
+    "mkRuntimeComponent should default to lib.platforms.linux")
 ]
