@@ -120,17 +120,16 @@ in {
     };
 
     distribution = mkOption {
-      type = types.enum [ "1.34" "1.35" ];
+      type = types.enum [ "1.30" "1.31" "1.32" "1.33" "1.34" "1.35" ];
       default = "1.34";
       description = "Kubernetes distribution track (maps to k3s version)";
     };
 
     package = mkOption {
       type = types.package;
-      default =
-        if cfg.distribution == "1.35"
-        then pkgs.blackmatter-k3s-latest or pkgs.k3s
-        else pkgs.blackmatter-k3s or pkgs.k3s;
+      default = let
+        trackPkg = "blackmatter-k3s-${builtins.replaceStrings ["."] ["-"] cfg.distribution}";
+      in pkgs.${trackPkg} or pkgs.blackmatter-k3s or pkgs.k3s;
       defaultText = literalExpression "pkgs.blackmatter-k3s";
       description = "k3s package to use (auto-selected from distribution track)";
     };

@@ -6,11 +6,20 @@
 
 let
   version = runcVersion;
+
+  # Hash map per runc version (placeholder hashes for untested versions)
+  hashes = {
+    "1.2.6" = "sha256-XMN+YKdQOQeOLLwvdrC6Si2iAIyyHD5RgZbrOHrQE/g=";
+    "1.2.8" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    "1.2.9" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    "1.3.4" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  };
+
   src = pkgs.fetchFromGitHub {
     owner = "opencontainers";
     repo = "runc";
     rev = "v${version}";
-    hash = "sha256-XMN+YKdQOQeOLLwvdrC6Si2iAIyyHD5RgZbrOHrQE/g=";
+    hash = hashes.${version};
   };
 in pkgs.buildGoModule {
   pname = "runc";

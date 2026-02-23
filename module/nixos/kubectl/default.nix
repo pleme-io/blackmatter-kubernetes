@@ -22,7 +22,7 @@ in {
     enable = mkEnableOption "kubectl and Kubernetes tools";
 
     distribution = mkOption {
-      type = types.nullOr (types.enum [ "1.34" "1.35" ]);
+      type = types.nullOr (types.enum [ "1.30" "1.31" "1.32" "1.33" "1.34" "1.35" ]);
       default = null;
       description = ''
         When set, documents which K8s version this node targets.

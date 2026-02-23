@@ -7,8 +7,12 @@
 let
   version = cniPluginsVersion;
 
-  # Hash map per CNI version
+  # Hash map per CNI version (placeholder hashes for untested versions)
   hashes = {
+    "1.4.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    "1.5.1" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    "1.6.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    "1.6.2" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     "1.8.0" = "sha256-/I2fEVVQ89y8l95Ri0V5qxVj/SzXVqP0IT2vSdz8jC8=";
     "1.9.0" = "sha256-0ZonR8pV20bBbC2AkNCJhoseDVxNwwMa7coD/ON6clA=";
   };

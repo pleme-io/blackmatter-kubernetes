@@ -71,6 +71,9 @@
       resolve = name: pkgs.${"blackmatter-${name}"};
     in [ (pkgs.blackmatter-k3s or pkgs.k3s) ] ++ map resolve profile.extraPackages;
 
+    # All supported tracks
+    allTracks = [ "1.30" "1.31" "1.32" "1.33" "1.34" "1.35" ];
+
     # Map profile extraPackages names to overlay package names (vanilla k8s)
     resolveK8sProfilePackages = pkgs: profileName: let
       profile = profileDefs.profiles.${profileName};
@@ -108,12 +111,38 @@
         observability = import ./pkgs/observability { inherit mkGoTool; pkgs = final; };
         testing = import ./pkgs/testing { inherit mkGoTool; pkgs = final; };
         k8sPkgs = import ./pkgs/kubernetes { pkgs = final; inherit mkGoMonorepoSource; };
-      in {
-        # ── k3s (Linux-only, 3-stage build) ─────────────────────────
-        blackmatter-k3s = (import ./pkgs/k3s { inherit (final) lib callPackage; }).k3s_1_34;
-        blackmatter-k3s-latest = (import ./pkgs/k3s { inherit (final) lib callPackage; }).k3s_1_35;
+        k3sPkgs = import ./pkgs/k3s { inherit (final) lib callPackage; };
 
-        # ── Vanilla Kubernetes control plane (Linux-only) ───────────
+        # Generate versioned k3s overlay entries: blackmatter-k3s-1-30, etc.
+        k3sVersioned = nixpkgs.lib.listToAttrs (map (track: let
+          suffix = builtins.replaceStrings ["."] ["-"] track;
+          trackSuffix = builtins.replaceStrings ["."] ["_"] track;
+        in {
+          name = "blackmatter-k3s-${suffix}";
+          value = k3sPkgs.${"k3s_${trackSuffix}"};
+        }) allTracks);
+
+        # Generate versioned k8s overlay entries: blackmatter-kubelet-1-30, etc.
+        k8sComponents = [ "kubelet" "kubeadm" "kube-apiserver" "kube-controller-manager"
+                          "kube-scheduler" "kube-proxy" "etcd" "containerd" "runc"
+                          "cni-plugins" "crictl" ];
+        k8sOverlayName = comp:
+          if comp == "etcd" then "etcd-server"
+          else if comp == "cni-plugins" then "k8s-cni-plugins"
+          else comp;
+        k8sVersioned = nixpkgs.lib.listToAttrs (nixpkgs.lib.concatMap (track: let
+          suffix = builtins.replaceStrings ["."] ["-"] track;
+          trackSuffix = builtins.replaceStrings ["."] ["_"] track;
+        in map (comp: {
+          name = "blackmatter-${k8sOverlayName comp}-${suffix}";
+          value = k8sPkgs.${"${comp}_${trackSuffix}"};
+        }) k8sComponents) allTracks);
+      in k3sVersioned // k8sVersioned // {
+        # ── k3s default + latest aliases ──────────────────────────────
+        blackmatter-k3s = k3sPkgs.k3s_1_34;
+        blackmatter-k3s-latest = k3sPkgs.k3s_1_35;
+
+        # ── Vanilla Kubernetes default (1.34) + latest (1.35) aliases ─
         blackmatter-kubelet = k8sPkgs.kubelet_1_34;
         blackmatter-kubelet-latest = k8sPkgs.kubelet_1_35;
         blackmatter-kubeadm = k8sPkgs.kubeadm_1_34;
@@ -126,8 +155,6 @@
         blackmatter-kube-scheduler-latest = k8sPkgs.kube-scheduler_1_35;
         blackmatter-kube-proxy = k8sPkgs.kube-proxy_1_34;
         blackmatter-kube-proxy-latest = k8sPkgs.kube-proxy_1_35;
-
-        # ── Vanilla Kubernetes runtime (Linux-only) ─────────────────
         blackmatter-etcd-server = k8sPkgs.etcd_1_34;
         blackmatter-etcd-server-latest = k8sPkgs.etcd_1_35;
         blackmatter-containerd = k8sPkgs.containerd_1_34;
@@ -367,7 +394,7 @@
       k3s-latest = pkgs.blackmatter-k3s-latest;
       calicoctl = pkgs.blackmatter-calicoctl;
 
-      # Vanilla Kubernetes control plane (Linux-only)
+      # Vanilla Kubernetes default + latest (Linux-only)
       kubelet = pkgs.blackmatter-kubelet;
       kubelet-latest = pkgs.blackmatter-kubelet-latest;
       kubeadm = pkgs.blackmatter-kubeadm;
@@ -380,8 +407,6 @@
       kube-scheduler-latest = pkgs.blackmatter-kube-scheduler-latest;
       kube-proxy = pkgs.blackmatter-kube-proxy;
       kube-proxy-latest = pkgs.blackmatter-kube-proxy-latest;
-
-      # Vanilla Kubernetes runtime (Linux-only)
       etcd-server = pkgs.blackmatter-etcd-server;
       etcd-server-latest = pkgs.blackmatter-etcd-server-latest;
       containerd = pkgs.blackmatter-containerd;
@@ -412,6 +437,34 @@
       calico-pod2daemon = pkgs.blackmatter-calico-pod2daemon;
       confd-calico = pkgs.blackmatter-confd-calico;
     }
+    # Versioned k3s + k8s packages (Linux-only) — k3s-1-30, kubelet-1-33, etc.
+    // nixpkgs.lib.optionalAttrs (builtins.elem system linuxSystems) (
+      nixpkgs.lib.listToAttrs (map (track: let
+        suffix = builtins.replaceStrings ["."] ["-"] track;
+      in {
+        name = "k3s-${suffix}";
+        value = pkgs.${"blackmatter-k3s-${suffix}"};
+      }) allTracks)
+      // nixpkgs.lib.listToAttrs (nixpkgs.lib.concatMap (track: let
+        suffix = builtins.replaceStrings ["."] ["-"] track;
+        trackSuffix = builtins.replaceStrings ["."] ["_"] track;
+        k8sComps = [
+          { pkg = "kubelet"; name = "kubelet"; }
+          { pkg = "kubeadm"; name = "kubeadm"; }
+          { pkg = "kube-apiserver"; name = "kube-apiserver"; }
+          { pkg = "kube-controller-manager"; name = "kube-controller-manager"; }
+          { pkg = "kube-scheduler"; name = "kube-scheduler"; }
+          { pkg = "kube-proxy"; name = "kube-proxy"; }
+          { pkg = "etcd-server"; name = "etcd-server"; }
+          { pkg = "containerd"; name = "containerd"; }
+          { pkg = "runc"; name = "runc"; }
+          { pkg = "k8s-cni-plugins"; name = "k8s-cni-plugins"; }
+          { pkg = "crictl"; name = "crictl"; }
+        ];
+      in map (c: {
+        name = "${c.name}-${suffix}";
+        value = pkgs.${"blackmatter-${c.pkg}-${suffix}"};
+      }) k8sComps) allTracks))
     # Profile package sets (Linux-only)
     // nixpkgs.lib.optionalAttrs (builtins.elem system linuxSystems)
       ((nixpkgs.lib.mapAttrs' (name: _:

@@ -6,11 +6,18 @@
 
 let
   version = containerdVersion;
+
+  # Hash map per containerd version (placeholder hashes for untested versions)
+  hashes = {
+    "1.7.27" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    "2.1.5" = "sha256-P948Rn11kAENAX3qHrSmIdV6VgybbuHdOTAgcYWk2bg=";
+  };
+
   src = pkgs.fetchFromGitHub {
     owner = "containerd";
     repo = "containerd";
     rev = "v${version}";
-    hash = "sha256-P948Rn11kAENAX3qHrSmIdV6VgybbuHdOTAgcYWk2bg=";
+    hash = hashes.${version};
   };
 in pkgs.buildGoModule {
   pname = "containerd";

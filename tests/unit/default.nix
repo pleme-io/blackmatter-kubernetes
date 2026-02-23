@@ -15,6 +15,35 @@ let
   profiles = import ../../lib/profiles.nix { inherit lib; };
   versionRegistry = import ../../lib/versions;
 
+  allTracks = [ "1.30" "1.31" "1.32" "1.33" "1.34" "1.35" ];
+
+  # Pre-import all k3s version pin files
+  k3sVersionFiles = {
+    "1.30" = import ../../pkgs/k3s/versions/1_30.nix;
+    "1.31" = import ../../pkgs/k3s/versions/1_31.nix;
+    "1.32" = import ../../pkgs/k3s/versions/1_32.nix;
+    "1.33" = import ../../pkgs/k3s/versions/1_33.nix;
+    "1.34" = import ../../pkgs/k3s/versions/1_34.nix;
+    "1.35" = import ../../pkgs/k3s/versions/1_35.nix;
+  };
+
+  # Pre-import all k8s monorepo hash files
+  k8sHashFiles = {
+    "1.30" = import ../../pkgs/kubernetes/versions/1_30.nix;
+    "1.31" = import ../../pkgs/kubernetes/versions/1_31.nix;
+    "1.32" = import ../../pkgs/kubernetes/versions/1_32.nix;
+    "1.33" = import ../../pkgs/kubernetes/versions/1_33.nix;
+    "1.34" = import ../../pkgs/kubernetes/versions/1_34.nix;
+    "1.35" = import ../../pkgs/kubernetes/versions/1_35.nix;
+  };
+
+  # Mock packages for source factory tests
+  mockPkgs = { inherit lib; fetchFromGitHub = _: null; };
+  mkSource = import ../../pkgs/kubernetes/source.nix { inherit mkGoMonorepoSource; pkgs = mockPkgs; };
+
+  # Helper: extract minor version number from "1.XX.Y" string
+  extractMinor = v: lib.toInt (builtins.elemAt (lib.splitString "." v) 1);
+
   # Evaluate the k3s module with given config
   k3sModule = import ../../module/nixos/k3s { inherit nixosHelpers; };
   evalModule = config: (evalNixOSModule {
@@ -109,8 +138,8 @@ in runTests [
 
   # ── Distribution system tests ──────────────────────────────────────
   (mkTest "distribution-tracks-exist"
-    (distributions.tracks ? "1.34" && distributions.tracks ? "1.35")
-    "distribution tracks 1.34 and 1.35 should exist")
+    (lib.all (t: distributions.tracks ? ${t}) allTracks)
+    "all 6 distribution tracks (1.30-1.35) should exist")
 
   (mkTest "distribution-default-track"
     (distributions.defaultTrack == "1.34")
@@ -121,60 +150,109 @@ in runTests [
     "latest distribution track should be 1.35")
 
   (mkTest "distribution-track-status"
-    (distributions.tracks."1.34".status == "supported"
+    (distributions.tracks."1.30".status == "eol"
+     && distributions.tracks."1.31".status == "eol"
+     && distributions.tracks."1.32".status == "eol"
+     && distributions.tracks."1.33".status == "supported"
+     && distributions.tracks."1.34".status == "supported"
      && distributions.tracks."1.35".status == "current")
-    "track status should be supported/current")
+    "track statuses should be eol/eol/eol/supported/supported/current")
+
+  (mkTest "distribution-tracks-have-eol-dates"
+    (lib.all (t: (distributions.tracks.${t}) ? eol) allTracks)
+    "all tracks should have EOL dates")
+
+  (mkTest "distribution-eol-dates-ordered"
+    (let
+      dates = map (t: distributions.tracks.${t}.eol) allTracks;
+      sorted = lib.sort (a: b: a < b) dates;
+    in dates == sorted)
+    "EOL dates should be chronologically ordered across tracks")
 
   (mkTest "distribution-version-files-exist"
-    (let
-      v134 = import ../../pkgs/k3s/versions/1_34.nix;
-      v135 = import ../../pkgs/k3s/versions/1_35.nix;
-    in v134 ? k3sVersion && v135 ? k3sVersion)
-    "version pin files should exist and have k3sVersion")
+    (lib.all (t: (k3sVersionFiles.${t}) ? k3sVersion) allTracks)
+    "all k3s version pin files should exist and have k3sVersion")
 
   (mkTest "distribution-version-strings"
-    (let
-      v134 = import ../../pkgs/k3s/versions/1_34.nix;
-      v135 = import ../../pkgs/k3s/versions/1_35.nix;
-    in lib.hasPrefix "1.34" v134.k3sVersion
-       && lib.hasPrefix "1.35" v135.k3sVersion)
-    "version strings should match their track")
+    (lib.all (t:
+      lib.hasPrefix t (k3sVersionFiles.${t}).k3sVersion
+    ) allTracks)
+    "k3s version strings should start with their track number")
 
   (mkTest "distribution-skew-policy"
     (distributions.skewPolicy.kubectlRange == 1
-     && distributions.skewPolicy.controlPlaneSkew == 1)
-    "skew policy should define kubectl and control plane ranges")
+     && distributions.skewPolicy.controlPlaneSkew == 1
+     && distributions.skewPolicy.kubeletMaxLag == 3)
+    "skew policy should define kubectl, control plane, and kubelet ranges")
 
-  (mkTest "distribution-kubectl-skew-valid"
+  (mkTest "distribution-supported-tracks-within-kubelet-skew"
     (let
-      kubectlVersion = 35;  # kubectl 1.35.0
-      skew = distributions.skewPolicy.kubectlRange;
-      abs = x: if x < 0 then -x else x;
-      checkTrack = track:
-        let k8sMinor = lib.toInt (lib.removePrefix "1." track.kubernetesVersion);
-        in abs (kubectlVersion - k8sMinor) <= skew;
-    in lib.all checkTrack (lib.attrValues distributions.tracks))
-    "kubectl 1.35.0 should be within skew of all distribution tracks")
+      supportedTracks = lib.filterAttrs (_: t: t.status != "eol") distributions.tracks;
+      minors = map (t: lib.toInt (lib.removePrefix "1." t.kubernetesVersion))
+                   (lib.attrValues supportedTracks);
+      maxMinor = lib.foldl' lib.max 0 minors;
+      minMinor = lib.foldl' lib.min 100 minors;
+    in (maxMinor - minMinor) <= distributions.skewPolicy.kubeletMaxLag)
+    "supported track spread should be within kubelet max lag policy")
 
   # ── Shared version registry tests ────────────────────────────────────
 
   (mkTest "version-registry-tracks-exist"
-    (versionRegistry ? "1.34" && versionRegistry ? "1.35")
-    "version registry should have 1.34 and 1.35 tracks")
+    (lib.all (t: versionRegistry ? ${t}) allTracks)
+    "version registry should have all 6 tracks (1.30-1.35)")
 
-  (mkTest "version-registry-1.34-fields"
-    (let v = versionRegistry."1.34";
-     in v ? kubernetesVersion && v ? etcdVersion && v ? containerdVersion
-        && v ? runcVersion && v ? cniPluginsVersion && v ? crictlVersion
-        && v ? pauseVersion)
-    "1.34 track should have all required version fields")
+  (mkTest "version-registry-all-tracks-have-fields"
+    (let
+      requiredFields = [ "kubernetesVersion" "etcdVersion" "containerdVersion"
+                         "runcVersion" "cniPluginsVersion" "crictlVersion" "pauseVersion" ];
+    in lib.all (t:
+      lib.all (f: versionRegistry.${t} ? ${f}) requiredFields
+    ) allTracks)
+    "all tracks should have all required version fields")
 
-  (mkTest "version-registry-1.35-fields"
-    (let v = versionRegistry."1.35";
-     in v ? kubernetesVersion && v ? etcdVersion && v ? containerdVersion
-        && v ? runcVersion && v ? cniPluginsVersion && v ? crictlVersion
-        && v ? pauseVersion)
-    "1.35 track should have all required version fields")
+  (mkTest "version-registry-1.30-versions"
+    (let v = versionRegistry."1.30";
+     in v.kubernetesVersion == "1.30.14"
+        && v.etcdVersion == "3.5.15"
+        && v.containerdVersion == "1.7.27"
+        && v.runcVersion == "1.2.6"
+        && v.cniPluginsVersion == "1.4.0"
+        && v.crictlVersion == "1.29.0"
+        && v.pauseVersion == "3.9")
+    "1.30 track should have correct version values")
+
+  (mkTest "version-registry-1.31-versions"
+    (let v = versionRegistry."1.31";
+     in v.kubernetesVersion == "1.31.14"
+        && v.etcdVersion == "3.5.24"
+        && v.containerdVersion == "2.1.5"
+        && v.runcVersion == "1.2.8"
+        && v.cniPluginsVersion == "1.5.1"
+        && v.crictlVersion == "1.31.0"
+        && v.pauseVersion == "3.10")
+    "1.31 track should have correct version values")
+
+  (mkTest "version-registry-1.32-versions"
+    (let v = versionRegistry."1.32";
+     in v.kubernetesVersion == "1.32.12"
+        && v.etcdVersion == "3.5.24"
+        && v.containerdVersion == "2.1.5"
+        && v.runcVersion == "1.2.9"
+        && v.cniPluginsVersion == "1.6.0"
+        && v.crictlVersion == "1.31.1"
+        && v.pauseVersion == "3.10")
+    "1.32 track should have correct version values")
+
+  (mkTest "version-registry-1.33-versions"
+    (let v = versionRegistry."1.33";
+     in v.kubernetesVersion == "1.33.8"
+        && v.etcdVersion == "3.5.24"
+        && v.containerdVersion == "2.1.5"
+        && v.runcVersion == "1.3.4"
+        && v.cniPluginsVersion == "1.6.2"
+        && v.crictlVersion == "1.32.0"
+        && v.pauseVersion == "3.10")
+    "1.33 track should have correct version values")
 
   (mkTest "version-registry-1.34-versions"
     (let v = versionRegistry."1.34";
@@ -198,35 +276,60 @@ in runTests [
         && v.pauseVersion == "3.11")
     "1.35 track should have correct version values")
 
-  # ── Version parity tests (k3s ↔ k8s) ────────────────────────────────
-
-  (mkTest "version-parity-1.34-k3s-matches-registry"
+  (mkTest "version-registry-kubernetes-version-progression"
     (let
-      k3sVersions = import ../../pkgs/k3s/versions/1_34.nix;
-      shared = versionRegistry."1.34";
-    in lib.hasPrefix shared.kubernetesVersion (lib.removeSuffix "+k3s1" k3sVersions.k3sVersion)
-       && lib.hasPrefix shared.cniPluginsVersion k3sVersions.k3sCNIVersion
-       && lib.hasPrefix shared.containerdVersion k3sVersions.containerdVersion
-       && lib.hasPrefix shared.crictlVersion k3sVersions.criCtlVersion)
-    "k3s 1.34 version pins should track shared version registry")
+      minors = map (t: extractMinor (versionRegistry.${t}).kubernetesVersion) allTracks;
+      expected = lib.range 30 35;
+    in minors == expected)
+    "kubernetes minor versions should progress 30-35 across tracks")
 
-  (mkTest "version-parity-1.35-k3s-matches-registry"
-    (let
-      k3sVersions = import ../../pkgs/k3s/versions/1_35.nix;
-      shared = versionRegistry."1.35";
-    in lib.hasPrefix shared.kubernetesVersion (lib.removeSuffix "+k3s1" k3sVersions.k3sVersion)
-       && lib.hasPrefix shared.cniPluginsVersion k3sVersions.k3sCNIVersion
-       && lib.hasPrefix shared.containerdVersion k3sVersions.containerdVersion
-       && lib.hasPrefix shared.crictlVersion k3sVersions.criCtlVersion)
-    "k3s 1.35 version pins should track shared version registry")
+  (mkTest "version-registry-containerd-v2-transition"
+    (lib.hasPrefix "1." versionRegistry."1.30".containerdVersion
+     && lib.all (t: lib.hasPrefix "2." versionRegistry.${t}.containerdVersion)
+        [ "1.31" "1.32" "1.33" "1.34" "1.35" ])
+    "1.30 should use containerd v1, 1.31+ should use containerd v2")
+
+  (mkTest "version-registry-etcd-3.5-to-3.6-transition"
+    (lib.hasPrefix "3.5" versionRegistry."1.30".etcdVersion
+     && lib.hasPrefix "3.5" versionRegistry."1.31".etcdVersion
+     && lib.hasPrefix "3.5" versionRegistry."1.32".etcdVersion
+     && lib.hasPrefix "3.5" versionRegistry."1.33".etcdVersion
+     && lib.hasPrefix "3.6" versionRegistry."1.34".etcdVersion
+     && lib.hasPrefix "3.6" versionRegistry."1.35".etcdVersion)
+    "etcd should transition from 3.5.x to 3.6.x between 1.33 and 1.34")
+
+  # ── Version parity tests (k3s ↔ shared registry) ─────────────────────
+
+  (mkTest "version-parity-k3s-kubernetes-all-tracks"
+    (lib.all (t:
+      lib.hasPrefix (versionRegistry.${t}).kubernetesVersion (k3sVersionFiles.${t}).k3sVersion
+    ) allTracks)
+    "k3s version should start with shared kubernetes version for all tracks")
+
+  (mkTest "version-parity-k3s-containerd-all-tracks"
+    (lib.all (t:
+      lib.hasPrefix (versionRegistry.${t}).containerdVersion (k3sVersionFiles.${t}).containerdVersion
+    ) allTracks)
+    "k3s containerd version should start with shared version for all tracks")
+
+  (mkTest "version-parity-k3s-crictl-all-tracks"
+    (lib.all (t:
+      lib.hasPrefix (versionRegistry.${t}).crictlVersion (k3sVersionFiles.${t}).criCtlVersion
+    ) allTracks)
+    "k3s crictl version should start with shared version for all tracks")
 
   (mkTest "version-parity-kubernetes-minor-matches"
-    (let
-      v134 = versionRegistry."1.34";
-      v135 = versionRegistry."1.35";
-    in lib.hasPrefix "1.34" v134.kubernetesVersion
-       && lib.hasPrefix "1.35" v135.kubernetesVersion)
+    (lib.all (t:
+      lib.hasPrefix t (versionRegistry.${t}).kubernetesVersion
+    ) allTracks)
     "version registry kubernetes versions should match their track names")
+
+  (mkTest "version-parity-k3s-containerd-v1-v2-package"
+    ((k3sVersionFiles."1.30").containerdPackage == "github.com/containerd/containerd"
+     && lib.all (t:
+       (k3sVersionFiles.${t}).containerdPackage == "github.com/k3s-io/containerd/v2"
+     ) [ "1.31" "1.32" "1.33" "1.34" "1.35" ])
+    "k3s 1.30 should use upstream containerd v1, 1.31+ should use k3s-io containerd v2")
 
   # ── Profile system tests ──────────────────────────────────────────────
 
@@ -326,39 +429,27 @@ in runTests [
       profileNames = lib.attrNames profiles.profiles;
       matrixSize = (lib.length trackNames) * (lib.length profileNames);
     in matrixSize == lib.length (lib.attrNames distributions.matrix)
-       && matrixSize == 16)
-    "profile x distribution matrix should have 16 entries (8 profiles x 2 tracks)")
+       && matrixSize == 48)
+    "profile x distribution matrix should have 48 entries (8 profiles x 6 tracks)")
 
   # ── Kubernetes package version tests ───────────────────────────────────
 
-  (mkTest "k8s-package-versions-1.34"
-    (let
-      hashes134 = import ../../pkgs/kubernetes/versions/1_34.nix;
-    in hashes134 ? srcHash)
-    "k8s package hashes for 1.34 should exist")
-
-  (mkTest "k8s-package-versions-1.35"
-    (let
-      hashes135 = import ../../pkgs/kubernetes/versions/1_35.nix;
-    in hashes135 ? srcHash)
-    "k8s package hashes for 1.35 should exist")
+  (mkTest "k8s-package-hashes-all-tracks"
+    (lib.all (t: (k8sHashFiles.${t}) ? srcHash) allTracks)
+    "k8s package hash files should exist for all tracks")
 
   (mkTest "k8s-source-factory-evaluates"
     (let
-      mockPkgs = { inherit lib; fetchFromGitHub = _: null; };
-      mkSource = import ../../pkgs/kubernetes/source.nix { inherit mkGoMonorepoSource; pkgs = mockPkgs; };
       versions = versionRegistry."1.34";
-      hashes = import ../../pkgs/kubernetes/versions/1_34.nix;
+      hashes = k8sHashFiles."1.34";
       result = mkSource { inherit versions hashes; };
     in result ? version && result ? ldflags && result.version == "1.34.3")
     "source factory should produce version and ldflags for 1.34")
 
   (mkTest "k8s-source-factory-ldflags-correct"
     (let
-      mockPkgs = { inherit lib; fetchFromGitHub = _: null; };
-      mkSource = import ../../pkgs/kubernetes/source.nix { inherit mkGoMonorepoSource; pkgs = mockPkgs; };
       versions = versionRegistry."1.34";
-      hashes = import ../../pkgs/kubernetes/versions/1_34.nix;
+      hashes = k8sHashFiles."1.34";
       result = mkSource { inherit versions hashes; };
     in lib.any (f: lib.hasInfix "gitVersion=v1.34.3" f) result.ldflags
        && lib.any (f: lib.hasInfix "gitMajor=1" f) result.ldflags
@@ -367,15 +458,36 @@ in runTests [
 
   (mkTest "k8s-source-factory-1.35-ldflags"
     (let
-      mockPkgs = { inherit lib; fetchFromGitHub = _: null; };
-      mkSource = import ../../pkgs/kubernetes/source.nix { inherit mkGoMonorepoSource; pkgs = mockPkgs; };
       versions = versionRegistry."1.35";
-      hashes = import ../../pkgs/kubernetes/versions/1_35.nix;
+      hashes = k8sHashFiles."1.35";
       result = mkSource { inherit versions hashes; };
     in result.version == "1.35.1"
        && lib.any (f: lib.hasInfix "gitVersion=v1.35.1" f) result.ldflags
        && lib.any (f: lib.hasInfix "gitMinor=35" f) result.ldflags)
     "source factory should produce correct ldflags for 1.35")
+
+  (mkTest "k8s-source-factory-all-tracks"
+    (lib.all (t:
+      let
+        versions = versionRegistry.${t};
+        hashes = k8sHashFiles.${t};
+        result = mkSource { inherit versions hashes; };
+      in result ? version && result ? ldflags
+         && result.version == versions.kubernetesVersion
+    ) allTracks)
+    "source factory should evaluate correctly for all 6 tracks")
+
+  (mkTest "k8s-source-factory-ldflags-all-tracks"
+    (lib.all (t:
+      let
+        versions = versionRegistry.${t};
+        hashes = k8sHashFiles.${t};
+        result = mkSource { inherit versions hashes; };
+        minor = toString (extractMinor versions.kubernetesVersion);
+      in lib.any (f: lib.hasInfix "gitVersion=v${versions.kubernetesVersion}" f) result.ldflags
+         && lib.any (f: lib.hasInfix "gitMinor=${minor}" f) result.ldflags
+    ) allTracks)
+    "source factory ldflags should be correct for all 6 tracks")
 
   # ── K8s NixOS module tests ───────────────────────────────────────────
 
@@ -566,6 +678,37 @@ in runTests [
     (let cfg = (evalK8sModule {}).config.services.blackmatter.kubernetes;
      in cfg.pki.certificateDir == "/var/lib/kubernetes/pki")
     "PKI certificate dir should derive from dataDir")
+
+  # Multi-distribution k8s module tests
+  (mkTest "k8s-distribution-all-values-accepted"
+    (lib.all (t:
+      let cfg = (evalK8sModule { distribution = t; }).config.services.blackmatter.kubernetes;
+      in cfg.distribution == t
+    ) allTracks)
+    "k8s module should accept all 6 distribution values")
+
+  (mkTest "k8s-versions-all-tracks-resolve"
+    (lib.all (t:
+      let cfg = (evalK8sModule { distribution = t; }).config.services.blackmatter.kubernetes;
+      in cfg.versions.kubernetesVersion == (versionRegistry.${t}).kubernetesVersion
+    ) allTracks)
+    "k8s module versions should resolve correctly for all tracks")
+
+  (mkTest "k8s-versions-1.30-resolves"
+    (let cfg = (evalK8sModule { distribution = "1.30"; }).config.services.blackmatter.kubernetes;
+     in cfg.versions.kubernetesVersion == "1.30.14"
+        && cfg.versions.etcdVersion == "3.5.15"
+        && cfg.versions.containerdVersion == "1.7.27"
+        && cfg.versions.pauseVersion == "3.9")
+    "setting distribution=1.30 should resolve to 1.30 registry values")
+
+  (mkTest "k8s-versions-1.33-resolves"
+    (let cfg = (evalK8sModule { distribution = "1.33"; }).config.services.blackmatter.kubernetes;
+     in cfg.versions.kubernetesVersion == "1.33.8"
+        && cfg.versions.etcdVersion == "3.5.24"
+        && cfg.versions.containerdVersion == "2.1.5"
+        && cfg.versions.pauseVersion == "3.10")
+    "setting distribution=1.33 should resolve to 1.33 registry values")
 
   # ── FluxCD module tests ──────────────────────────────────────────────
 

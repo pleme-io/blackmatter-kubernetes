@@ -3,6 +3,8 @@
 # Builds all Kubernetes binaries from the upstream monorepo and runtime
 # components from their respective upstream repos.
 #
+# Tracks: 1.30 (eol), 1.31 (eol), 1.32 (eol), 1.33, 1.34 (default), 1.35 (latest)
+#
 # Usage:
 #   k8s = import ./pkgs/kubernetes { inherit pkgs mkGoMonorepoSource; };
 #   k8s.kubelet_1_34    # kubelet from k8s 1.34 track
@@ -13,6 +15,8 @@ let
   lib = pkgs.lib;
   versionRegistry = import ../../lib/versions;
   mkSource = import ./source.nix { inherit mkGoMonorepoSource pkgs; };
+
+  allTracks = [ "1.30" "1.31" "1.32" "1.33" "1.34" "1.35" ];
 
   # Build all components for a given track
   mkTrack = track: let
@@ -33,36 +37,28 @@ let
     crictl = import ./crictl.nix { inherit pkgs; inherit (versions) crictlVersion; };
   };
 
-  track_1_34 = mkTrack "1.34";
-  track_1_35 = mkTrack "1.35";
+  # Build all tracks
+  tracks = lib.genAttrs allTracks mkTrack;
 
-in {
-  # 1.34 track (default)
-  kubelet_1_34 = track_1_34.kubelet;
-  kubeadm_1_34 = track_1_34.kubeadm;
-  kube-apiserver_1_34 = track_1_34.kube-apiserver;
-  kube-controller-manager_1_34 = track_1_34.kube-controller-manager;
-  kube-scheduler_1_34 = track_1_34.kube-scheduler;
-  kube-proxy_1_34 = track_1_34.kube-proxy;
-  etcd_1_34 = track_1_34.etcd;
-  containerd_1_34 = track_1_34.containerd;
-  runc_1_34 = track_1_34.runc;
-  cni-plugins_1_34 = track_1_34.cni-plugins;
-  crictl_1_34 = track_1_34.crictl;
+  # Generate flat exports: <component>_<track> for each track
+  componentNames = [ "kubelet" "kubeadm" "kube-apiserver" "kube-controller-manager"
+                     "kube-scheduler" "kube-proxy" "etcd" "containerd" "runc"
+                     "cni-plugins" "crictl" ];
 
-  # 1.35 track (latest)
-  kubelet_1_35 = track_1_35.kubelet;
-  kubeadm_1_35 = track_1_35.kubeadm;
-  kube-apiserver_1_35 = track_1_35.kube-apiserver;
-  kube-controller-manager_1_35 = track_1_35.kube-controller-manager;
-  kube-scheduler_1_35 = track_1_35.kube-scheduler;
-  kube-proxy_1_35 = track_1_35.kube-proxy;
-  etcd_1_35 = track_1_35.etcd;
-  containerd_1_35 = track_1_35.containerd;
-  runc_1_35 = track_1_35.runc;
-  cni-plugins_1_35 = track_1_35.cni-plugins;
-  crictl_1_35 = track_1_35.crictl;
+  flatExports = lib.listToAttrs (lib.concatMap (track:
+    let
+      trackSuffix = builtins.replaceStrings ["."] ["_"] track;
+      trackPkgs = tracks.${track};
+    in map (comp: {
+      name = "${comp}_${trackSuffix}";
+      value = trackPkgs.${comp};
+    }) componentNames
+  ) allTracks);
 
-  # Track attrsets for module consumption
-  inherit track_1_34 track_1_35;
-}
+  # Track attrsets keyed as track_1_XX for module consumption
+  trackAttrs = lib.listToAttrs (map (track: {
+    name = "track_${builtins.replaceStrings ["."] ["_"] track}";
+    value = tracks.${track};
+  }) allTracks);
+
+in flatExports // trackAttrs

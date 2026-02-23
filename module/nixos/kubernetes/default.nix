@@ -31,10 +31,8 @@ let
   k8sPkgs = import ../../../pkgs/kubernetes { inherit pkgs mkGoMonorepoSource; };
 
   # Select packages based on distribution track
-  trackPackages =
-    if cfg.distribution == "1.35"
-    then k8sPkgs.track_1_35
-    else k8sPkgs.track_1_34;
+  trackSuffix = builtins.replaceStrings ["."] ["_"] cfg.distribution;
+  trackPackages = k8sPkgs.${"track_${trackSuffix}"};
 
   # Kernel modules needed by vanilla k8s
   baseKernelModules = [ "overlay" "br_netfilter" ];
@@ -86,7 +84,7 @@ in {
     };
 
     distribution = mkOption {
-      type = types.enum [ "1.34" "1.35" ];
+      type = types.enum [ "1.30" "1.31" "1.32" "1.33" "1.34" "1.35" ];
       default = "1.34";
       description = "Kubernetes version track (same tracks as k3s)";
     };
