@@ -129,7 +129,8 @@ with lib; let
 in {
   imports = [
     ./k3d
-    ../k9s  # K9s TUI with Nord theme
+    ./kubectl  # Kubeconfig management, aliases, completion
+    ../k9s     # K9s TUI with Nord theme
   ];
 
   options.blackmatter.components.kubernetes = {
