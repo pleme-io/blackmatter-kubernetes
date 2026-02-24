@@ -62,19 +62,19 @@ in {
 
     packages = mkOption {
       type = types.listOf types.package;
-      default = with pkgs; [
-        (blackmatter-kubectl or kubectl)
-        (blackmatter-k9s or k9s)
-        (blackmatter-helm or kubernetes-helm)
-        (blackmatter-kubectx or kubectx)
-        (blackmatter-stern or stern)
-        (blackmatter-kubecolor or kubecolor)
-        (blackmatter-kube-score or kube-score)
-        (blackmatter-kubectl-tree or kubectl-tree)
-        (blackmatter-fluxcd or fluxcd)
-        (blackmatter-kustomize or kustomize)
-        (blackmatter-helmfile or helmfile)
-        (blackmatter-kubeconform or kubeconform)
+      default = let bm = name: fallback: pkgs.${"blackmatter-${name}"} or fallback; in [
+        (bm "kubectl" pkgs.kubectl)
+        (bm "k9s" pkgs.k9s)
+        (bm "helm" pkgs.kubernetes-helm)
+        (bm "kubectx" pkgs.kubectx)
+        (bm "stern" pkgs.stern)
+        (bm "kubecolor" pkgs.kubecolor)
+        (bm "kube-score" pkgs.kube-score)
+        (bm "kubectl-tree" pkgs.kubectl-tree)
+        (bm "fluxcd" pkgs.fluxcd)
+        (bm "kustomize" pkgs.kustomize)
+        (bm "helmfile" pkgs.helmfile)
+        (bm "kubeconform" pkgs.kubeconform)
       ];
       description = "Kubernetes tools to install system-wide";
     };

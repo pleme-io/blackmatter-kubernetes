@@ -8,100 +8,103 @@ with lib; let
   cfg = config.blackmatter.components.kubernetes;
 
   # Tool definitions — maps tool name to package expression.
-  # Uses fallback pattern: (blackmatter-X or X) for cross-platform compat.
-  allTools = with pkgs; {
+  # Prefers blackmatter-built overlay packages (Go monorepo), falls back to nixpkgs.
+  # Uses pkgs.attr or default syntax (bare identifiers + `or` keyword don't work in Nix).
+  bm = name: fallback: pkgs.${"blackmatter-${name}"} or fallback;
+
+  allTools = {
     # Core CLI
-    kubectl = (blackmatter-kubectl or kubectl);
-    k9s = (blackmatter-k9s or k9s);
-    helm = (blackmatter-helm or kubernetes-helm);
-    kubectx = (blackmatter-kubectx or kubectx);
+    kubectl = bm "kubectl" pkgs.kubectl;
+    k9s = bm "k9s" pkgs.k9s;
+    helm = bm "helm" pkgs.kubernetes-helm;
+    kubectx = bm "kubectx" pkgs.kubectx;
 
     # GitOps & deployment
-    fluxcd = (blackmatter-fluxcd or fluxcd);
-    stern = (blackmatter-stern or stern);
-    kubecolor = (blackmatter-kubecolor or kubecolor);
-    kustomize = (blackmatter-kustomize or kustomize);
-    helmfile = (blackmatter-helmfile or helmfile);
-    argocd = (blackmatter-argocd or argocd);
-    kapp = (blackmatter-kapp or kapp);
-    timoni = (blackmatter-timoni or timoni);
-    tektoncd-cli = (blackmatter-tektoncd-cli or tektoncd-cli);
-    argo-rollouts = (blackmatter-argo-rollouts or argo-rollouts);
+    fluxcd = bm "fluxcd" pkgs.fluxcd;
+    stern = bm "stern" pkgs.stern;
+    kubecolor = bm "kubecolor" pkgs.kubecolor;
+    kustomize = bm "kustomize" pkgs.kustomize;
+    helmfile = bm "helmfile" pkgs.helmfile;
+    argocd = bm "argocd" pkgs.argocd;
+    kapp = bm "kapp" pkgs.kapp;
+    timoni = bm "timoni" pkgs.timoni;
+    tektoncd-cli = bm "tektoncd-cli" pkgs.tektoncd-cli;
+    argo-rollouts = bm "argo-rollouts" pkgs.argo-rollouts;
 
     # Analysis & validation
-    kube-score = (blackmatter-kube-score or kube-score);
-    kubectl-tree = (blackmatter-kubectl-tree or kubectl-tree);
-    kubeconform = (blackmatter-kubeconform or kubeconform);
-    kube-linter = (blackmatter-kube-linter or kube-linter);
+    kube-score = bm "kube-score" pkgs.kube-score;
+    kubectl-tree = bm "kubectl-tree" pkgs.kubectl-tree;
+    kubeconform = bm "kubeconform" pkgs.kubeconform;
+    kube-linter = bm "kube-linter" pkgs.kube-linter;
 
     # Security & policy
-    kubeseal = (blackmatter-kubeseal or kubeseal);
-    trivy = (blackmatter-trivy or trivy);
-    grype = (blackmatter-grype or grype);
-    cosign = (blackmatter-cosign or cosign);
-    kyverno = (blackmatter-kyverno or kyverno);
-    conftest = (blackmatter-conftest or conftest);
-    kubescape = (blackmatter-kubescape or kubescape);
-    falcoctl = (blackmatter-falcoctl or falcoctl);
-    open-policy-agent = (blackmatter-open-policy-agent or open-policy-agent);
-    step-cli = (blackmatter-step-cli or step-cli);
+    kubeseal = bm "kubeseal" pkgs.kubeseal;
+    trivy = bm "trivy" pkgs.trivy;
+    grype = bm "grype" pkgs.grype;
+    cosign = bm "cosign" pkgs.cosign;
+    kyverno = bm "kyverno" pkgs.kyverno;
+    conftest = bm "conftest" pkgs.conftest;
+    kubescape = bm "kubescape" pkgs.kubescape;
+    falcoctl = bm "falcoctl" pkgs.falcoctl;
+    open-policy-agent = bm "open-policy-agent" pkgs.open-policy-agent;
+    step-cli = bm "step-cli" pkgs.step-cli;
 
     # kubectl plugins
-    popeye = (blackmatter-popeye or popeye);
-    pluto = (blackmatter-pluto or pluto);
-    kubent = (blackmatter-kubent or kubent);
-    kor = (blackmatter-kor or kor);
-    kube-capacity = (blackmatter-kube-capacity or kube-capacity);
-    kubectl-neat = (blackmatter-kubectl-neat or kubectl-neat);
-    kubectl-images = (blackmatter-kubectl-images or kubectl-images);
-    krew = (blackmatter-krew or krew);
-    kubectl-ktop = (blackmatter-kubectl-ktop or kubectl-ktop);
-    kubeshark = (blackmatter-kubeshark or kubeshark);
-    kubectl-cnpg = (blackmatter-kubectl-cnpg or kubectl-cnpg);
-    kubevirt = (blackmatter-kubevirt or kubevirt);
+    popeye = bm "popeye" pkgs.popeye;
+    pluto = bm "pluto" pkgs.pluto;
+    kubent = bm "kubent" pkgs.kubent;
+    kor = bm "kor" pkgs.kor;
+    kube-capacity = bm "kube-capacity" pkgs.kube-capacity;
+    kubectl-neat = bm "kubectl-neat" pkgs.kubectl-neat;
+    kubectl-images = bm "kubectl-images" pkgs.kubectl-images;
+    krew = bm "krew" pkgs.krew;
+    kubectl-ktop = bm "kubectl-ktop" pkgs.kubectl-ktop;
+    kubeshark = bm "kubeshark" pkgs.kubeshark;
+    kubectl-cnpg = bm "kubectl-cnpg" pkgs.kubectl-cnpg;
+    kubevirt = bm "kubevirt" pkgs.kubevirt;
 
     # Helm ecosystem
-    helm-diff = (blackmatter-helm-diff or helm-diff);
-    helm-docs = (blackmatter-helm-docs or helm-docs);
+    helm-diff = bm "helm-diff" pkgs.helm-diff;
+    helm-docs = bm "helm-docs" pkgs.helm-docs;
 
     # Container/image tools
-    crane = (blackmatter-crane or crane);
-    ko = (blackmatter-ko or ko);
+    crane = bm "crane" pkgs.crane;
+    ko = bm "ko" pkgs.ko;
 
     # Service mesh CLIs
-    istioctl = (blackmatter-istioctl or istioctl);
-    linkerd = (blackmatter-linkerd or linkerd);
-    hubble = (blackmatter-hubble or hubble);
-    cmctl = (blackmatter-cmctl or cmctl);
+    istioctl = bm "istioctl" pkgs.istioctl;
+    linkerd = bm "linkerd" pkgs.linkerd;
+    hubble = bm "hubble" pkgs.hubble;
+    cmctl = bm "cmctl" pkgs.cmctl;
 
     # Cluster management
-    clusterctl = (blackmatter-clusterctl or clusterctl);
-    talosctl = (blackmatter-talosctl or talosctl);
-    vcluster = (blackmatter-vcluster or vcluster);
-    crossplane-cli = (blackmatter-crossplane-cli or crossplane-cli);
-    kompose = (blackmatter-kompose or kompose);
-    velero = (blackmatter-velero or velero);
+    clusterctl = bm "clusterctl" pkgs.clusterctl;
+    talosctl = bm "talosctl" pkgs.talosctl;
+    vcluster = bm "vcluster" pkgs.vcluster;
+    crossplane-cli = bm "crossplane-cli" pkgs.crossplane-cli;
+    kompose = bm "kompose" pkgs.kompose;
+    velero = bm "velero" pkgs.velero;
 
     # Observability
-    thanos = (blackmatter-thanos or thanos);
-    logcli = (blackmatter-logcli or logcli);
-    tempo-cli = (blackmatter-tempo-cli or tempo-cli);
-    mimirtool = (blackmatter-mimirtool or mimirtool);
-    coredns = (blackmatter-coredns or coredns);
-    kube-state-metrics = (blackmatter-kube-state-metrics or kube-state-metrics);
+    thanos = bm "thanos" pkgs.thanos;
+    logcli = bm "logcli" pkgs.logcli;
+    tempo-cli = bm "tempo-cli" pkgs.tempo-cli;
+    mimirtool = bm "mimirtool" pkgs.mimirtool;
+    coredns = bm "coredns" pkgs.coredns;
+    kube-state-metrics = bm "kube-state-metrics" pkgs.kube-state-metrics;
 
     # Load testing
-    k6 = (blackmatter-k6 or k6);
-    vegeta = (blackmatter-vegeta or vegeta);
-    hey = (blackmatter-hey or hey);
-    fortio = (blackmatter-fortio or fortio);
+    k6 = bm "k6" pkgs.k6;
+    vegeta = bm "vegeta" pkgs.vegeta;
+    hey = bm "hey" pkgs.hey;
+    fortio = bm "fortio" pkgs.fortio;
 
     # Development
-    kubebuilder = (blackmatter-kubebuilder or kubebuilder);
-    operator-sdk = (blackmatter-operator-sdk or operator-sdk);
-    etcd = (blackmatter-etcd or etcd);
-    cilium-cli = (blackmatter-cilium-cli or cilium-cli);
-    kwok = (blackmatter-kwok or kwok);
+    kubebuilder = bm "kubebuilder" pkgs.kubebuilder;
+    operator-sdk = bm "operator-sdk" pkgs.operator-sdk;
+    etcd = bm "etcd" pkgs.etcd;
+    cilium-cli = bm "cilium-cli" pkgs.cilium-cli;
+    kwok = bm "kwok" pkgs.kwok;
   };
 
   # Profile definitions — which tools are enabled per profile
