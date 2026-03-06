@@ -17,9 +17,13 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.substrate.follows = "substrate";
     };
+    devenv = {
+      url = "github:cachix/devenv";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, fenix, substrate, blackmatter-go }:
+  outputs = { self, nixpkgs, fenix, substrate, blackmatter-go, devenv }:
   let
     # k3s + k8s + tools are Linux-only; HM modules are cross-platform
     linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
@@ -284,6 +288,19 @@
       // (lib.mapAttrs' (name: _:
         lib.nameValuePair "k8s-profile-${name}" pkgs.${"blackmatter-k8s-profile-${name}"}
       ) profileDefs.profiles)));
+
+    # ── Dev shells ──────────────────────────────────────────────────
+    devShells = forEachSystem ({ pkgs, ... }: {
+      default = devenv.lib.mkShell {
+        inputs = { inherit nixpkgs devenv; };
+        inherit pkgs;
+        modules = [{
+          languages.nix.enable = true;
+          packages = with pkgs; [ nixpkgs-fmt nil ];
+          git-hooks.hooks.nixpkgs-fmt.enable = true;
+        }];
+      };
+    });
 
     # ── Tests ───────────────────────────────────────────────────────
     # Unit tests: nix eval .#tests.x86_64-linux.unit
