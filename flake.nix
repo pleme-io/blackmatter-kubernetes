@@ -19,7 +19,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, substrate, blackmatter-go }:
+  outputs = { self, nixpkgs, fenix, substrate, blackmatter-go }:
   let
     # k3s + k8s + tools are Linux-only; HM modules are cross-platform
     linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
