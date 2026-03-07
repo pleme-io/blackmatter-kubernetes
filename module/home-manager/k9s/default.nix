@@ -14,7 +14,7 @@ with lib; let
     then "Library/Application Support/k9s"
     else ".config/k9s";
 
-  # Nord color palette
+  # Nord color palette — canonical hex values from nordtheme.com
   nord = {
     # Polar Night
     nord0 = "#2e3440";
@@ -82,20 +82,14 @@ in {
   };
 
   config = mkIf cfg.enable {
-    # K9s is already installed via kubernetes component
-    # Just configure it
-
     # K9s configuration
     home.file."${k9sConfigPath}/config.yaml".text = ''
       k9s:
-        # General settings
         refreshRate: ${toString cfg.refreshRate}
         headless: ${if cfg.headless then "true" else "false"}
         readOnly: ${if cfg.readOnly then "true" else "false"}
         logoless: ${if cfg.logoless then "true" else "false"}
         crumbsless: ${if cfg.crumbsless then "true" else "false"}
-
-        # UI settings
         ui:
           enableMouse: true
           headless: ${if cfg.headless then "true" else "false"}
@@ -104,8 +98,6 @@ in {
           reactive: false
           noIcons: false
           skin: ${cfg.theme}
-
-        # Logger settings
         logger:
           tail: 100
           buffer: 5000
@@ -113,8 +105,6 @@ in {
           fullScreenLogs: false
           textWrap: false
           showTime: false
-
-        # Shell pod settings
         shellPod:
           image: busybox:1.35.0
           namespace: default
@@ -123,104 +113,100 @@ in {
             memory: 100Mi
     '';
 
-    # Nord skin configuration
+    # Nord skin — full spec coverage for k9s 0.50+
+    # Uses "default" for bgColor where possible (inherits terminal background,
+    # enables transparency with compositors like Ghostty/Kitty).
+    # True Nord palette hex values throughout.
     home.file."${k9sConfigPath}/skins/nord.yaml".text = ''
-      # Nord theme for K9s - Arctic-inspired elegant dark theme
       k9s:
         body:
-          fgColor: "${nord.nord6}"
-          bgColor: "${nord.nord0}"
+          fgColor: "${nord.nord4}"
+          bgColor: default
           logoColor: "${nord.nord8}"
-
-        # Prompt
         prompt:
-          fgColor: "${nord.nord6}"
+          fgColor: "${nord.nord4}"
           bgColor: "${nord.nord0}"
-          suggestColor: "${nord.nord8}"
-
-        # Info section
+          suggestColor: "${nord.nord12}"
         info:
-          fgColor: "${nord.nord13}"
-          sectionColor: "${nord.nord8}"
-
-        # Dialog
+          fgColor: "${nord.nord9}"
+          sectionColor: "${nord.nord4}"
         dialog:
-          fgColor: "${nord.nord6}"
-          bgColor: "${nord.nord1}"
-          buttonFgColor: "${nord.nord6}"
-          buttonBgColor: "${nord.nord10}"
-          buttonFocusFgColor: "${nord.nord0}"
-          buttonFocusBgColor: "${nord.nord8}"
+          fgColor: "${nord.nord4}"
+          bgColor: default
+          buttonFgColor: "${nord.nord4}"
+          buttonBgColor: "${nord.nord15}"
+          buttonFocusFgColor: "${nord.nord13}"
+          buttonFocusBgColor: "${nord.nord9}"
           labelFgColor: "${nord.nord12}"
-          fieldFgColor: "${nord.nord6}"
-
-        # Frame
+          fieldFgColor: "${nord.nord4}"
         frame:
           border:
-            fgColor: "${nord.nord9}"
+            fgColor: "${nord.nord3}"
             focusColor: "${nord.nord8}"
           menu:
-            fgColor: "${nord.nord6}"
-            keyColor: "${nord.nord8}"
-            numKeyColor: "${nord.nord13}"
+            fgColor: "${nord.nord4}"
+            keyColor: "${nord.nord9}"
+            numKeyColor: "${nord.nord9}"
           crumbs:
-            fgColor: "${nord.nord6}"
-            bgColor: "${nord.nord3}"
+            fgColor: "${nord.nord4}"
+            bgColor: "${nord.nord1}"
             activeColor: "${nord.nord8}"
           status:
             newColor: "${nord.nord8}"
-            modifyColor: "${nord.nord10}"
+            modifyColor: "${nord.nord15}"
             addColor: "${nord.nord14}"
             errorColor: "${nord.nord11}"
-            highlightColor: "${nord.nord13}"
+            highlightColor: "${nord.nord12}"
             killColor: "${nord.nord3}"
             completedColor: "${nord.nord3}"
           title:
-            fgColor: "${nord.nord6}"
-            bgColor: "${nord.nord3}"
-            highlightColor: "${nord.nord8}"
-            counterColor: "${nord.nord10}"
-            filterColor: "${nord.nord13}"
-
-        # Views
+            fgColor: "${nord.nord4}"
+            bgColor: "${nord.nord1}"
+            highlightColor: "${nord.nord12}"
+            counterColor: "${nord.nord15}"
+            filterColor: "${nord.nord9}"
         views:
           charts:
-            bgColor: "${nord.nord0}"
-            dialBgColor: "${nord.nord1}"
+            bgColor: default
             defaultDialColors:
-              - "${nord.nord8}"
+              - "${nord.nord15}"
               - "${nord.nord11}"
             defaultChartColors:
-              - "${nord.nord8}"
+              - "${nord.nord15}"
               - "${nord.nord11}"
-
           table:
-            fgColor: "${nord.nord6}"
-            bgColor: "${nord.nord0}"
+            fgColor: "${nord.nord4}"
+            bgColor: default
             cursorFgColor: "${nord.nord0}"
             cursorBgColor: "${nord.nord8}"
             markColor: "${nord.nord12}"
-
             header:
-              fgColor: "${nord.nord6}"
-              bgColor: "${nord.nord3}"
+              fgColor: "${nord.nord4}"
+              bgColor: default
               sorterColor: "${nord.nord8}"
-
-        # YAML viewer
-        yaml:
-          keyColor: "${nord.nord8}"
-          colonColor: "${nord.nord9}"
-          valueColor: "${nord.nord6}"
-
-        # Logs
-        logs:
-          fgColor: "${nord.nord6}"
-          bgColor: "${nord.nord0}"
-          indicator:
-            fgColor: "${nord.nord8}"
-            bgColor: "${nord.nord3}"
-            toggleOnColor: "${nord.nord14}"
-            toggleOffColor: "${nord.nord3}"
+          xray:
+            fgColor: "${nord.nord4}"
+            bgColor: default
+            cursorColor: "${nord.nord1}"
+            graphicColor: "${nord.nord15}"
+            showIcons: false
+          yaml:
+            keyColor: "${nord.nord9}"
+            colonColor: "${nord.nord15}"
+            valueColor: "${nord.nord4}"
+          logs:
+            fgColor: "${nord.nord4}"
+            bgColor: default
+            indicator:
+              fgColor: "${nord.nord4}"
+              bgColor: "${nord.nord15}"
+              toggleOnColor: "${nord.nord15}"
+              toggleOffColor: "${nord.nord9}"
+          help:
+            fgColor: "${nord.nord4}"
+            bgColor: "${nord.nord0}"
+            indicator:
+              fgColor: "${nord.nord11}"
     '';
 
     # Helpful aliases
