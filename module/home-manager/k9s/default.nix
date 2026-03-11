@@ -1,5 +1,21 @@
 # modules/home-manager/blackmatter/components/k9s/default.nix
-# K9s Kubernetes CLI - TUI for managing Kubernetes clusters
+#
+# K9s Kubernetes TUI — themed skin with abstract color palette.
+#
+# Colors default to Nord but can be overridden by Stylix (via
+# blackmatter's themes/stylix.nix) or any other color source.
+# When Stylix is active, base16 scheme colors flow in automatically
+# and k9s matches every other themed tool in the ecosystem.
+#
+# Semantic color mapping (matches skim-tab / blackmatter visual language):
+#   cyan    → primary accent, interactive elements, cursor, focus
+#   blue    → labels, info, keys, secondary accent
+#   green   → healthy, active, additions
+#   yellow  → warnings, attention
+#   orange  → highlights, marks, suggestions
+#   red     → errors, destructive actions
+#   purple  → categories, types, counters, indicators
+#   teal    → secondary frost accent
 {
   config,
   lib,
@@ -8,41 +24,17 @@
 }:
 with lib; let
   cfg = config.blackmatter.components.k9s;
+  c = cfg.colors;
 
   # K9s config directory path (macOS uses different location)
   k9sConfigPath = if pkgs.stdenv.isDarwin
     then "Library/Application Support/k9s"
     else ".config/k9s";
 
-  # Nord color palette — canonical hex values from nordtheme.com
-  nord = {
-    # Polar Night
-    nord0 = "#2e3440";
-    nord1 = "#3b4252";
-    nord2 = "#434c5e";
-    nord3 = "#4c566a";
-
-    # Snow Storm
-    nord4 = "#d8dee9";
-    nord5 = "#e5e9f0";
-    nord6 = "#eceff4";
-
-    # Frost
-    nord7 = "#8fbcbb";
-    nord8 = "#88c0d0";
-    nord9 = "#81a1c1";
-    nord10 = "#5e81ac";
-
-    # Aurora
-    nord11 = "#bf616a"; # Red
-    nord12 = "#d08770"; # Orange
-    nord13 = "#ebcb8b"; # Yellow
-    nord14 = "#a3be8c"; # Green
-    nord15 = "#b48ead"; # Purple
-  };
+  boolStr = b: if b then "true" else "false";
 in {
   options.blackmatter.components.k9s = {
-    enable = mkEnableOption "K9s Kubernetes TUI with Nord theme";
+    enable = mkEnableOption "K9s Kubernetes TUI with themed skin";
 
     refreshRate = mkOption {
       type = types.int;
@@ -74,30 +66,58 @@ in {
       description = "Hide breadcrumbs";
     };
 
-    theme = mkOption {
-      type = types.enum ["nord" "default"];
-      default = "nord";
-      description = "K9s theme (nord or default)";
+    skinName = mkOption {
+      type = types.str;
+      default = "blackmatter";
+      description = "Skin filename (without .yaml extension)";
+    };
+
+    # ── Abstract color palette ─────────────────────────────────────
+    # Defaults to Nord. Stylix (or any theme system) overrides these.
+    colors = {
+      # Backgrounds (Polar Night)
+      bg        = mkOption { type = types.str; default = "#2e3440"; description = "Darkest background"; };
+      bgLight   = mkOption { type = types.str; default = "#3b4252"; description = "Selection / panel background"; };
+      bgLighter = mkOption { type = types.str; default = "#434c5e"; description = "Highlight background"; };
+      comment   = mkOption { type = types.str; default = "#4c566a"; description = "Comments, borders, muted elements"; };
+
+      # Foregrounds (Snow Storm)
+      fgDim     = mkOption { type = types.str; default = "#d8dee9"; description = "Subtle foreground"; };
+      fg        = mkOption { type = types.str; default = "#e5e9f0"; description = "Primary foreground"; };
+      fgBright  = mkOption { type = types.str; default = "#eceff4"; description = "Bright / emphasized foreground"; };
+
+      # Frost
+      teal      = mkOption { type = types.str; default = "#8fbcbb"; description = "Frost teal — secondary accent"; };
+      cyan      = mkOption { type = types.str; default = "#88c0d0"; description = "Frost cyan — primary accent"; };
+      blue      = mkOption { type = types.str; default = "#81a1c1"; description = "Frost blue — labels, info"; };
+      deepBlue  = mkOption { type = types.str; default = "#5e81ac"; description = "Frost deep — subtle accents"; };
+
+      # Aurora
+      red       = mkOption { type = types.str; default = "#bf616a"; description = "Error, destructive"; };
+      orange    = mkOption { type = types.str; default = "#d08770"; description = "Highlight, mark, attention"; };
+      yellow    = mkOption { type = types.str; default = "#ebcb8b"; description = "Warning, caution"; };
+      green     = mkOption { type = types.str; default = "#a3be8c"; description = "Healthy, active, added"; };
+      purple    = mkOption { type = types.str; default = "#b48ead"; description = "Type, category, indicator"; };
     };
   };
 
   config = mkIf cfg.enable {
-    # K9s configuration
+    # ── K9s configuration ────────────────────────────────────────
     home.file."${k9sConfigPath}/config.yaml".text = ''
       k9s:
         refreshRate: ${toString cfg.refreshRate}
-        headless: ${if cfg.headless then "true" else "false"}
-        readOnly: ${if cfg.readOnly then "true" else "false"}
-        logoless: ${if cfg.logoless then "true" else "false"}
-        crumbsless: ${if cfg.crumbsless then "true" else "false"}
+        headless: ${boolStr cfg.headless}
+        readOnly: ${boolStr cfg.readOnly}
+        logoless: ${boolStr cfg.logoless}
+        crumbsless: ${boolStr cfg.crumbsless}
         ui:
           enableMouse: true
-          headless: ${if cfg.headless then "true" else "false"}
-          logoless: ${if cfg.logoless then "true" else "false"}
-          crumbsless: ${if cfg.crumbsless then "true" else "false"}
+          headless: ${boolStr cfg.headless}
+          logoless: ${boolStr cfg.logoless}
+          crumbsless: ${boolStr cfg.crumbsless}
           reactive: false
           noIcons: false
-          skin: ${cfg.theme}
+          skin: ${cfg.skinName}
         logger:
           tail: 100
           buffer: 5000
@@ -113,100 +133,110 @@ in {
             memory: 100Mi
     '';
 
-    # Nord skin — full spec coverage for k9s 0.50+
-    # Uses "default" for bgColor where possible (inherits terminal background,
-    # enables transparency with compositors like Ghostty/Kitty).
-    # True Nord palette hex values throughout.
-    home.file."${k9sConfigPath}/skins/nord.yaml".text = ''
+    # ── Skin ─────────────────────────────────────────────────────
+    # Full k9s 0.50+ spec. Uses "default" for bgColor where possible
+    # (inherits terminal background, enables transparency with
+    # compositors like Ghostty/Kitty).
+    #
+    # Color semantics match the blackmatter visual language:
+    #   cyan  = interactive / focus / cursor    (skim-tab: Frost items)
+    #   blue  = labels / info / keys            (skim-tab: info text)
+    #   green = healthy / active / added        (skim-tab: active ns)
+    #   yellow = warnings / filter active       (skim-tab: flags)
+    #   orange = highlights / marks / suggest   (skim-tab: attention)
+    #   red   = errors / destructive            (skim-tab: errors)
+    #   purple = types / counters / indicators  (skim-tab: category glyphs)
+    home.file."${k9sConfigPath}/skins/${cfg.skinName}.yaml".text = ''
       k9s:
         body:
-          fgColor: "${nord.nord4}"
+          fgColor: "${c.fg}"
           bgColor: default
-          logoColor: "${nord.nord8}"
+          logoColor: "${c.cyan}"
         prompt:
-          fgColor: "${nord.nord4}"
-          bgColor: "${nord.nord0}"
-          suggestColor: "${nord.nord12}"
+          fgColor: "${c.fgBright}"
+          bgColor: "${c.bg}"
+          suggestColor: "${c.orange}"
         info:
-          fgColor: "${nord.nord9}"
-          sectionColor: "${nord.nord4}"
+          fgColor: "${c.cyan}"
+          sectionColor: "${c.blue}"
         dialog:
-          fgColor: "${nord.nord4}"
+          fgColor: "${c.fgBright}"
           bgColor: default
-          buttonFgColor: "${nord.nord4}"
-          buttonBgColor: "${nord.nord15}"
-          buttonFocusFgColor: "${nord.nord13}"
-          buttonFocusBgColor: "${nord.nord9}"
-          labelFgColor: "${nord.nord12}"
-          fieldFgColor: "${nord.nord4}"
+          buttonFgColor: "${c.fgBright}"
+          buttonBgColor: "${c.blue}"
+          buttonFocusFgColor: "${c.bg}"
+          buttonFocusBgColor: "${c.cyan}"
+          labelFgColor: "${c.orange}"
+          fieldFgColor: "${c.fg}"
         frame:
           border:
-            fgColor: "${nord.nord3}"
-            focusColor: "${nord.nord8}"
+            fgColor: "${c.comment}"
+            focusColor: "${c.cyan}"
           menu:
-            fgColor: "${nord.nord4}"
-            keyColor: "${nord.nord9}"
-            numKeyColor: "${nord.nord9}"
+            fgColor: "${c.fg}"
+            keyColor: "${c.cyan}"
+            numKeyColor: "${c.cyan}"
           crumbs:
-            fgColor: "${nord.nord4}"
-            bgColor: "${nord.nord1}"
-            activeColor: "${nord.nord8}"
+            fgColor: "${c.fgBright}"
+            bgColor: "${c.bgLighter}"
+            activeColor: "${c.cyan}"
           status:
-            newColor: "${nord.nord8}"
-            modifyColor: "${nord.nord15}"
-            addColor: "${nord.nord14}"
-            errorColor: "${nord.nord11}"
-            highlightColor: "${nord.nord12}"
-            killColor: "${nord.nord3}"
-            completedColor: "${nord.nord3}"
+            newColor: "${c.cyan}"
+            modifyColor: "${c.purple}"
+            addColor: "${c.green}"
+            pendingColor: "${c.yellow}"
+            errorColor: "${c.red}"
+            highlightColor: "${c.orange}"
+            killColor: "${c.red}"
+            completedColor: "${c.comment}"
           title:
-            fgColor: "${nord.nord4}"
-            bgColor: "${nord.nord1}"
-            highlightColor: "${nord.nord12}"
-            counterColor: "${nord.nord15}"
-            filterColor: "${nord.nord9}"
+            fgColor: "${c.fgBright}"
+            bgColor: "${c.bgLight}"
+            highlightColor: "${c.cyan}"
+            counterColor: "${c.purple}"
+            filterColor: "${c.yellow}"
         views:
           charts:
             bgColor: default
             defaultDialColors:
-              - "${nord.nord15}"
-              - "${nord.nord11}"
+              - "${c.cyan}"
+              - "${c.red}"
             defaultChartColors:
-              - "${nord.nord15}"
-              - "${nord.nord11}"
+              - "${c.cyan}"
+              - "${c.red}"
           table:
-            fgColor: "${nord.nord4}"
+            fgColor: "${c.fg}"
             bgColor: default
-            cursorFgColor: "${nord.nord0}"
-            cursorBgColor: "${nord.nord8}"
-            markColor: "${nord.nord12}"
+            cursorFgColor: "${c.bg}"
+            cursorBgColor: "${c.cyan}"
+            markColor: "${c.orange}"
             header:
-              fgColor: "${nord.nord4}"
+              fgColor: "${c.blue}"
               bgColor: default
-              sorterColor: "${nord.nord8}"
+              sorterColor: "${c.cyan}"
           xray:
-            fgColor: "${nord.nord4}"
+            fgColor: "${c.fg}"
             bgColor: default
-            cursorColor: "${nord.nord1}"
-            graphicColor: "${nord.nord15}"
+            cursorColor: "${c.bgLight}"
+            graphicColor: "${c.purple}"
             showIcons: false
           yaml:
-            keyColor: "${nord.nord9}"
-            colonColor: "${nord.nord15}"
-            valueColor: "${nord.nord4}"
+            keyColor: "${c.blue}"
+            colonColor: "${c.comment}"
+            valueColor: "${c.fg}"
           logs:
-            fgColor: "${nord.nord4}"
+            fgColor: "${c.fg}"
             bgColor: default
             indicator:
-              fgColor: "${nord.nord4}"
-              bgColor: "${nord.nord15}"
-              toggleOnColor: "${nord.nord15}"
-              toggleOffColor: "${nord.nord9}"
+              fgColor: "${c.fgBright}"
+              bgColor: "${c.purple}"
+              toggleOnColor: "${c.green}"
+              toggleOffColor: "${c.comment}"
           help:
-            fgColor: "${nord.nord4}"
-            bgColor: "${nord.nord0}"
+            fgColor: "${c.fg}"
+            bgColor: "${c.bg}"
             indicator:
-              fgColor: "${nord.nord11}"
+              fgColor: "${c.cyan}"
     '';
 
     # Helpful aliases
