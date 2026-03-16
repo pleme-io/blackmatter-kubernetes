@@ -27,7 +27,7 @@ pub async fn run(
     // If VM is running, shut it down first
     if vm::is_running(&config.name)? {
         info!(cluster = %config.name, "VM is running, shutting down first");
-        let code = down::run(config, 120).await?;
+        let code = down::run(config, config.shutdown_timeout_secs).await?;
         if code != ExitCode::SUCCESS {
             tracing::warn!("graceful shutdown returned non-success, proceeding with destroy");
         }

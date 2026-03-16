@@ -239,6 +239,7 @@ async fn run(cmd: Command, json_output: bool) -> Result<ExitCode> {
                 secrets_file,
                 sops_yaml,
                 nix_flake,
+                ..config::ClusterConfig::default()
             };
             up::run(&cfg, no_seed, no_wait).await
         }
@@ -301,6 +302,7 @@ async fn run(cmd: Command, json_output: bool) -> Result<ExitCode> {
                 secrets_file,
                 sops_yaml,
                 nix_flake,
+                ..config::ClusterConfig::default()
             };
             daemon::run(&cfg, interval, max_failures).await
         }

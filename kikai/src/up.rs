@@ -80,7 +80,7 @@ pub async fn run(config: &ClusterConfig, no_seed: bool, no_wait: bool) -> Result
 
     // 9. Wait for health (unless --no-wait)
     if !no_wait {
-        let timeout = 300; // 5 minutes
+        let timeout = config.boot_timeout_secs;
 
         println!("Waiting for cluster to become healthy (timeout: {timeout}s)...");
 

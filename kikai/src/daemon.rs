@@ -70,7 +70,7 @@ pub async fn run(
                         // If VM is still running, try graceful shutdown first
                         if vm::is_running(&config.name).unwrap_or(false) {
                             info!("stopping unhealthy VM");
-                            if let Err(e) = crate::down::run(config, 60).await {
+                            if let Err(e) = crate::down::run(config, config.shutdown_timeout_secs).await {
                                 warn!(error = %e, "graceful shutdown failed, continuing with restart");
                                 vm::cleanup_pid_file(&config.name)?;
                             }
