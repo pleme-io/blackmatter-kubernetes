@@ -99,13 +99,34 @@ in {
           secretsFile = lib.mkOption {
             type = lib.types.str;
             default = "secrets.yaml";
-            description = "Path to SOPS-encrypted secrets file.";
+            description = "Path to SOPS-encrypted secrets file (absolute for launchd).";
           };
 
           sopsYaml = lib.mkOption {
             type = lib.types.str;
             default = ".sops.yaml";
-            description = "Path to .sops.yaml config.";
+            description = "Path to .sops.yaml config (absolute for launchd).";
+          };
+
+          # Pre-decrypted secret file paths (set by sops-nix at activation time).
+          # When set, kikai reads these directly instead of calling sops at runtime.
+          # This is the preferred pattern: rebuild decrypts → launchd passes paths → kikai reads.
+          decryptedSecrets = {
+            serverToken = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Path to pre-decrypted k3s server token file.";
+            };
+            ageKey = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Path to pre-decrypted VM SOPS age private key file.";
+            };
+            adminPassword = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Path to pre-decrypted k3s admin password file.";
+            };
           };
 
           autoStart = lib.mkOption {
@@ -179,8 +200,18 @@ in {
           KeepAlive = true;
           StandardOutPath = "${homeDir}/Library/Logs/kikai-${name}.log";
           StandardErrorPath = "${homeDir}/Library/Logs/kikai-${name}.err";
+          WorkingDirectory = clusterCfg.nixFlake;
           EnvironmentVariables = {
             PATH = lib.makeBinPath runtimeDeps + ":/usr/bin:/bin:/usr/sbin";
+            KIKAI_SECRETS_FILE = clusterCfg.secretsFile;
+            KIKAI_SOPS_YAML = clusterCfg.sopsYaml;
+            KIKAI_NIX_FLAKE = clusterCfg.nixFlake;
+          } // lib.optionalAttrs (clusterCfg.decryptedSecrets.serverToken != null) {
+            KIKAI_SERVER_TOKEN_FILE = clusterCfg.decryptedSecrets.serverToken;
+          } // lib.optionalAttrs (clusterCfg.decryptedSecrets.ageKey != null) {
+            KIKAI_AGE_KEY_FILE = clusterCfg.decryptedSecrets.ageKey;
+          } // lib.optionalAttrs (clusterCfg.decryptedSecrets.adminPassword != null) {
+            KIKAI_ADMIN_PASSWORD_FILE = clusterCfg.decryptedSecrets.adminPassword;
           };
         };
       }
