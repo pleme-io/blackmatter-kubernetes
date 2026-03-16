@@ -19,8 +19,8 @@ let
   enabledClusters = lib.filterAttrs (_: c: c.enable) cfg.clusters;
   homeDir = config.home.homeDirectory;
 
-  # kikai binary — comes from the blackmatter-kubernetes overlay
-  kikaiPkg = pkgs.blackmatter-kikai or pkgs.kikai or (throw "kikai package not found in pkgs");
+  # kikai binary — set via clusters.<name>.package or from overlay
+  kikaiPkg = cfg.kikaiPackage;
 
   # Runtime tools that kikai shells out to
   runtimeDeps = with pkgs; [
@@ -39,6 +39,13 @@ let
     nix_flake = c.nixFlake;
   }) enabledClusters;
 in {
+  options.blackmatter.components.kubernetes.kikaiPackage = lib.mkOption {
+    type = lib.types.package;
+    default = pkgs.blackmatter-kikai or pkgs.kikai or (throw "kikai package not found — set blackmatter.components.kubernetes.kikaiPackage");
+    defaultText = lib.literalExpression "pkgs.blackmatter-kikai";
+    description = "The kikai binary package.";
+  };
+
   options.blackmatter.components.kubernetes.clusters = lib.mkOption {
     type = lib.types.attrsOf (lib.types.submodule {
       options = {
