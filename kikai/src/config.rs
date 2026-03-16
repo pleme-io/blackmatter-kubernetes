@@ -21,6 +21,12 @@ pub struct ClusterConfig {
     pub sops_yaml: String,
     /// Path to nix flake (for building the image)
     pub nix_flake: String,
+    /// Boot/health-check timeout in seconds (how long to wait for cluster to become healthy)
+    pub boot_timeout_secs: u64,
+    /// Shutdown timeout in seconds (how long to wait for graceful VM shutdown)
+    pub shutdown_timeout_secs: u64,
+    /// Health check polling interval in seconds (base interval for daemon health loop)
+    pub health_interval_secs: u64,
 }
 
 impl Default for ClusterConfig {
@@ -35,6 +41,9 @@ impl Default for ClusterConfig {
             secrets_file: "secrets.yaml".to_string(),
             sops_yaml: ".sops.yaml".to_string(),
             nix_flake: ".".to_string(),
+            boot_timeout_secs: 300,
+            shutdown_timeout_secs: 120,
+            health_interval_secs: 2,
         }
     }
 }

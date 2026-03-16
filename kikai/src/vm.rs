@@ -78,16 +78,12 @@ pub fn is_running(cluster: &str) -> Result<bool> {
     Ok(libc_kill(pid))
 }
 
-/// Send signal 0 to check if a process exists.
+/// Send signal 0 to check if a process exists, using libc directly
+/// instead of spawning a subprocess.
 fn libc_kill(pid: i32) -> bool {
-    // Use std::process::Command to check via kill -0
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    // SAFETY: kill(pid, 0) does not send a signal; it only checks whether the
+    // process exists and is reachable. Returns 0 on success, -1 on error.
+    unsafe { libc::kill(pid, 0) == 0 }
 }
 
 /// Stop the VM gracefully via SSH shutdown, waiting for the process to exit.
