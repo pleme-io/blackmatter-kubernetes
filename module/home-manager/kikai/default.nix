@@ -50,9 +50,13 @@ in {
 
     kikaiRuntimeDeps = lib.mkOption {
       type = lib.types.listOf lib.types.package;
-      default = with pkgs; [ sops age openssl yq-go kubectl ];
-      defaultText = lib.literalExpression "[ sops age openssl yq-go kubectl ]";
-      description = "Runtime dependencies added to kikai's PATH.";
+      default = with pkgs; [ kubectl ];
+      defaultText = lib.literalExpression "[ kubectl ]";
+      description = ''
+        Runtime dependencies added to kikai's PATH.
+        sops/age NOT needed — secrets are pre-decrypted by sops-nix at
+        rebuild time and passed via KIKAI_*_FILE environment variables.
+      '';
     };
 
     clusters = lib.mkOption {

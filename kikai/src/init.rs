@@ -15,7 +15,18 @@ pub fn host_from_cluster(cluster: &str) -> &str {
 ///
 /// Stores them in SOPS and updates .sops.yaml with the VM's age public key.
 /// Idempotent: if secrets already exist, displays them and exits successfully.
+///
+/// When all three `KIKAI_*_FILE` env vars are set and their target files exist,
+/// secret generation is skipped entirely — secrets are already provisioned via the
+/// environment.
 pub async fn run(config: &ClusterConfig, dry_run: bool) -> Result<ExitCode> {
+    // If all secrets are provided via environment, skip init entirely
+    if !dry_run && sops::all_secrets_from_env() {
+        info!(cluster = %config.name, "secrets already provisioned via environment, skipping init");
+        println!("Cluster '{}': secrets already provisioned via environment.", config.name);
+        return Ok(ExitCode::SUCCESS);
+    }
+
     // Check idempotency: if secrets already exist, show them and exit
     if !dry_run && sops::check_existing(&config.name, &config.secrets_file).await? {
         return Ok(ExitCode::SUCCESS);

@@ -1,9 +1,86 @@
 use anyhow::{Context, Result};
-use tracing::info;
+use tracing::{info, warn};
 
-/// Check whether cluster secrets already exist in SOPS.
+/// Try to read a secret from a pre-decrypted file referenced by an env var.
+///
+/// Returns `None` if the env var is not set or the file doesn't exist.
+/// The env var value is a file path; the file contents are trimmed and returned.
+fn try_read_decrypted(env_var: &str) -> Option<String> {
+    let path = std::env::var(env_var).ok()?;
+    let path = std::path::Path::new(&path);
+    if path.exists() {
+        // Security: warn if file is world-readable (mode > 0o600)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if let Ok(meta) = path.metadata() {
+                let mode = meta.mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    warn!(
+                        path = %path.display(),
+                        mode = format!("{mode:04o}"),
+                        "secret file has overly permissive permissions (should be 0600 or stricter)"
+                    );
+                }
+            }
+        }
+        std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// Map a SOPS key path to a `KIKAI_*_FILE` env var name.
+///
+/// Extracts the last bracketed component, uppercases it, replaces hyphens with
+/// underscores, and wraps it as `KIKAI_{NAME}_FILE`.
+///
+/// Example: `["clusters"]["ryn-k3s"]["server-token"]` -> `KIKAI_SERVER_TOKEN_FILE`
+fn key_path_to_env_var(key_path: &str) -> String {
+    // Extract the last ["..."] component
+    let last = key_path
+        .rsplit("[\"")
+        .next()
+        .and_then(|s| s.strip_suffix("\"]"))
+        .unwrap_or(key_path);
+
+    let name = last.to_uppercase().replace('-', "_");
+    format!("KIKAI_{name}_FILE")
+}
+
+/// Check whether all three core cluster secrets are available via env vars.
+///
+/// Returns `true` if `KIKAI_SERVER_TOKEN_FILE`, `KIKAI_AGE_KEY_FILE`, and
+/// `KIKAI_ADMIN_PASSWORD_FILE` are all set and their target files exist.
+pub fn all_secrets_from_env() -> bool {
+    const VARS: &[&str] = &[
+        "KIKAI_SERVER_TOKEN_FILE",
+        "KIKAI_AGE_KEY_FILE",
+        "KIKAI_ADMIN_PASSWORD_FILE",
+    ];
+    VARS.iter().all(|v| try_read_decrypted(v).is_some())
+}
+
+/// Check whether cluster secrets already exist in SOPS (or via env vars).
 /// Returns true if the server-token for the given cluster is present.
 pub async fn check_existing(cluster: &str, secrets_file: &str) -> Result<bool> {
+    // Check env var path first
+    let key_path = format!("[\"clusters\"][\"{cluster}\"][\"server-token\"]");
+    let env_key = key_path_to_env_var(&key_path);
+    if let Some(token) = try_read_decrypted(&env_key) {
+        let token_preview = if token.len() > 20 {
+            &token[..20]
+        } else {
+            &token
+        };
+        println!("Cluster '{cluster}' already initialized (via environment).");
+        println!("  Server token: {token_preview}...");
+        println!("  Age key:      present");
+        println!();
+        println!("To re-initialize, remove the entries first with sops.");
+        return Ok(true);
+    }
+
     let output = tokio::process::Command::new("sops")
         .args([
             "-d",
@@ -52,7 +129,20 @@ pub async fn set(secrets_file: &str, key_path: &str, value: &str) -> Result<()> 
 }
 
 /// Extract a value from a SOPS-encrypted file at the given key path.
+///
+/// If a matching `KIKAI_*_FILE` environment variable is set and the referenced
+/// file exists, the value is read directly from that file — bypassing sops
+/// entirely. This lets callers pre-decrypt secrets and inject them via the
+/// environment, eliminating sops as a runtime dependency.
 pub async fn extract(secrets_file: &str, key_path: &str) -> Result<String> {
+    // Check for pre-decrypted file via env var
+    let env_key = key_path_to_env_var(key_path);
+    if let Some(value) = try_read_decrypted(&env_key) {
+        info!(env_var = %env_key, "read secret from pre-decrypted file");
+        return Ok(value);
+    }
+
+    // Fall back to sops
     if !std::path::Path::new(secrets_file).exists() {
         anyhow::bail!("secrets file does not exist: {secrets_file}");
     }
@@ -139,6 +229,8 @@ pub async fn updatekeys(secrets_file: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn test_sops_key_path_format() {
         let cluster = "ryn-k3s";
@@ -150,5 +242,51 @@ mod tests {
 
         let age_key_path = format!("[\"clusters\"][\"{cluster}\"][\"age-key\"]");
         assert_eq!(age_key_path, "[\"clusters\"][\"ryn-k3s\"][\"age-key\"]");
+    }
+
+    #[test]
+    fn test_key_path_to_env_var() {
+        assert_eq!(
+            key_path_to_env_var("[\"clusters\"][\"ryn-k3s\"][\"server-token\"]"),
+            "KIKAI_SERVER_TOKEN_FILE"
+        );
+        assert_eq!(
+            key_path_to_env_var("[\"clusters\"][\"ryn-k3s\"][\"age-key\"]"),
+            "KIKAI_AGE_KEY_FILE"
+        );
+        assert_eq!(
+            key_path_to_env_var("[\"clusters\"][\"ryn-k3s\"][\"admin-password\"]"),
+            "KIKAI_ADMIN_PASSWORD_FILE"
+        );
+    }
+
+    #[test]
+    fn test_try_read_decrypted_missing_env() {
+        // Env var not set → None
+        assert!(try_read_decrypted("KIKAI_NONEXISTENT_TEST_FILE").is_none());
+    }
+
+    #[test]
+    fn test_try_read_decrypted_file_exists() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "  my-secret-value\n").unwrap();
+        std::env::set_var(
+            "KIKAI_TEST_SECRET_FILE",
+            tmp.path().to_str().unwrap(),
+        );
+        let result = try_read_decrypted("KIKAI_TEST_SECRET_FILE");
+        std::env::remove_var("KIKAI_TEST_SECRET_FILE");
+        assert_eq!(result, Some("my-secret-value".to_string()));
+    }
+
+    #[test]
+    fn test_try_read_decrypted_file_missing() {
+        std::env::set_var(
+            "KIKAI_TEST_MISSING_FILE",
+            "/tmp/kikai-nonexistent-test-file",
+        );
+        let result = try_read_decrypted("KIKAI_TEST_MISSING_FILE");
+        std::env::remove_var("KIKAI_TEST_MISSING_FILE");
+        assert!(result.is_none());
     }
 }
