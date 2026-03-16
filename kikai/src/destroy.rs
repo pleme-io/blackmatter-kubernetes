@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use tracing::info;
 
 use crate::config::{self, ClusterConfig};
-use crate::{down, vm};
+use crate::{down, sops, vm};
 
 /// Destroy a cluster: stop the VM, remove data directory, optionally remove secrets.
 pub async fn run(
@@ -47,17 +47,22 @@ pub async fn run(
     vm::cleanup_pid_file(&config.name)?;
 
     if remove_secrets {
-        tracing::warn!(
-            "SOPS secret removal is not yet implemented. \
-             Manually remove cluster entries from secrets.yaml with sops."
-        );
-        println!();
-        println!("NOTE: Automatic SOPS secret removal is not yet implemented.");
-        println!("To remove secrets manually:");
-        println!(
-            "  sops unset secrets.yaml '[\"clusters\"][\"{}\"]'",
-            config.name
-        );
+        let key_path = format!("[\"clusters\"][\"{}\"]", config.name);
+        info!(key_path = %key_path, "removing cluster secrets from SOPS");
+        match sops::remove(&config.secrets_file, &key_path).await {
+            Ok(()) => {
+                println!("Removed cluster secrets from SOPS.");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to remove cluster secrets from SOPS");
+                println!("WARNING: Could not remove secrets automatically: {e}");
+                println!("To remove secrets manually:");
+                println!(
+                    "  sops unset {} '{}'",
+                    config.secrets_file, key_path
+                );
+            }
+        }
     }
 
     println!();

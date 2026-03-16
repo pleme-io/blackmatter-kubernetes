@@ -35,6 +35,10 @@ pub async fn check_existing(cluster: &str, secrets_file: &str) -> Result<bool> {
 
 /// Set a value in a SOPS-encrypted file at the given key path.
 pub async fn set(secrets_file: &str, key_path: &str, value: &str) -> Result<()> {
+    if !std::path::Path::new(secrets_file).exists() {
+        anyhow::bail!("secrets file does not exist: {secrets_file}");
+    }
+
     let status = tokio::process::Command::new("sops")
         .args(["set", secrets_file, key_path, &format!("\"{value}\"")])
         .status()
@@ -49,6 +53,10 @@ pub async fn set(secrets_file: &str, key_path: &str, value: &str) -> Result<()> 
 
 /// Extract a value from a SOPS-encrypted file at the given key path.
 pub async fn extract(secrets_file: &str, key_path: &str) -> Result<String> {
+    if !std::path::Path::new(secrets_file).exists() {
+        anyhow::bail!("secrets file does not exist: {secrets_file}");
+    }
+
     let output = tokio::process::Command::new("sops")
         .args(["-d", "--extract", key_path, secrets_file])
         .output()
@@ -92,6 +100,25 @@ pub async fn update_sops_yaml(sops_yaml: &str, age_public: &str) -> Result<()> {
         anyhow::bail!("yq update failed");
     }
     info!("added VM age public key to .sops.yaml");
+    Ok(())
+}
+
+/// Remove a key from a SOPS-encrypted file using `sops unset`.
+pub async fn remove(secrets_file: &str, key_path: &str) -> Result<()> {
+    if !std::path::Path::new(secrets_file).exists() {
+        anyhow::bail!("secrets file does not exist: {secrets_file}");
+    }
+
+    let status = tokio::process::Command::new("sops")
+        .args(["unset", secrets_file, key_path])
+        .status()
+        .await
+        .with_context(|| format!("sops unset {key_path}"))?;
+
+    if !status.success() {
+        anyhow::bail!("sops unset failed for {key_path}");
+    }
+    info!("removed {key_path} from {secrets_file}");
     Ok(())
 }
 
