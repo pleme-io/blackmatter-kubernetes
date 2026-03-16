@@ -1,0 +1,30 @@
+[package]
+name = "kikai"
+version = "0.1.0"
+edition = "2021"
+description = "Kubernetes cluster lifecycle orchestrator"
+license = "MIT"
+repository = "https://github.com/pleme-io/blackmatter-kubernetes"
+
+[[bin]]
+name = "kikai"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
+
+[lints.clippy]
+pedantic = "warn"
