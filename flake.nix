@@ -17,13 +17,18 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.substrate.follows = "substrate";
     };
+    kikai = {
+      url = "github:pleme-io/kikai";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.substrate.follows = "substrate";
+    };
     devenv = {
       url = "github:cachix/devenv";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, fenix, substrate, blackmatter-go, devenv }:
+  outputs = { self, nixpkgs, fenix, substrate, blackmatter-go, kikai, devenv }:
   let
     # k3s + k8s + tools are Linux-only; HM modules are cross-platform
     linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
@@ -190,17 +195,7 @@
     overlays.default = nixpkgs.lib.composeManyExtensions [
       goOverlay
       (final: prev: {
-        blackmatter-kikai = final.rustPlatform.buildRustPackage {
-          pname = "kikai";
-          version = "0.1.0";
-          src = self + "/kikai";
-          cargoLock.lockFile = self + "/kikai/Cargo.lock";
-          meta = {
-            description = "Kubernetes cluster lifecycle orchestrator";
-            license = final.lib.licenses.mit;
-            mainProgram = "kikai";
-          };
-        };
+        blackmatter-kikai = kikai.packages.${final.stdenv.hostPlatform.system}.default;
       })
       (final: prev: let
         tools = import ./pkgs/tools { inherit mkGoTool; pkgs = final; };
@@ -289,18 +284,8 @@
         value = pkgs.${"blackmatter-${name}-${suffix}"};
       }) comps) allTracks);
 
-      # kikai — k3s cluster lifecycle orchestrator (Rust)
-      kikaiPkg = pkgs.rustPlatform.buildRustPackage {
-        pname = "kikai";
-        version = "0.1.0";
-        src = ./kikai;
-        cargoLock.lockFile = ./kikai/Cargo.lock;
-        meta = {
-          description = "Kubernetes cluster lifecycle orchestrator";
-          license = lib.licenses.mit;
-          mainProgram = "kikai";
-        };
-      };
+      # kikai — from pleme-io/kikai standalone repo
+      kikaiPkg = kikai.packages.${system}.default;
 
     in { default = pkgs.blackmatter-kubectl; kikai = kikaiPkg; }
     // mkPkgsFrom crossPlatformTools
