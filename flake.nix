@@ -189,6 +189,19 @@
     # ── Overlay ─────────────────────────────────────────────────────
     overlays.default = nixpkgs.lib.composeManyExtensions [
       goOverlay
+      (final: prev: {
+        blackmatter-kikai = final.rustPlatform.buildRustPackage {
+          pname = "kikai";
+          version = "0.1.0";
+          src = self + "/kikai";
+          cargoLock.lockFile = self + "/kikai/Cargo.lock";
+          meta = {
+            description = "Kubernetes cluster lifecycle orchestrator";
+            license = final.lib.licenses.mit;
+            mainProgram = "kikai";
+          };
+        };
+      })
       (final: prev: let
         tools = import ./pkgs/tools { inherit mkGoTool; pkgs = final; };
         network = import ./pkgs/network { inherit mkGoTool; pkgs = final; };
@@ -276,7 +289,20 @@
         value = pkgs.${"blackmatter-${name}-${suffix}"};
       }) comps) allTracks);
 
-    in { default = pkgs.blackmatter-kubectl; }
+      # kikai — k3s cluster lifecycle orchestrator (Rust)
+      kikaiPkg = pkgs.rustPlatform.buildRustPackage {
+        pname = "kikai";
+        version = "0.1.0";
+        src = ./kikai;
+        cargoLock.lockFile = ./kikai/Cargo.lock;
+        meta = {
+          description = "Kubernetes cluster lifecycle orchestrator";
+          license = lib.licenses.mit;
+          mainProgram = "kikai";
+        };
+      };
+
+    in { default = pkgs.blackmatter-kubectl; kikai = kikaiPkg; }
     // mkPkgsFrom crossPlatformTools
     // lib.optionalAttrs isLinux (mkPkgsFrom linuxOnlyTools)
     // lib.optionalAttrs isLinux (
