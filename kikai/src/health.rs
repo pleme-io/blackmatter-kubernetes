@@ -1,3 +1,15 @@
+// Health check interface:
+//   check_api(api_port)    -- verifies K8s API server responds at /healthz
+//   check_node(cluster)    -- verifies node is Ready via kubectl
+//   check_flux(cluster)    -- verifies FluxCD kustomizations reconciled
+//   check_pods(cluster)    -- verifies no stuck/failed pods
+//   check_all(config)      -- aggregates all checks into HealthSummary
+//   wait_for_*(...)        -- polls until healthy with exponential backoff
+//
+// To implement alternative backends (direct API, custom probes), replace
+// the kubectl/curl calls in check_* functions. The interface contract
+// (HealthResult, HealthSummary) remains stable.
+
 use anyhow::Result;
 use serde::Serialize;
 use tracing::info;

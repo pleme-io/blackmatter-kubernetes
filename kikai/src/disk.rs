@@ -271,3 +271,48 @@ fn find_init(nix_store: &Path) -> Result<String> {
     }
     anyhow::bail!("could not find nixos-system init in nix store")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_find_file_kernel() {
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("abc123-linux-kernel");
+        fs::create_dir_all(&store_dir).unwrap();
+        fs::write(store_dir.join("Image"), b"fake kernel").unwrap();
+
+        let result = find_file(tmp.path(), &["bzImage", "Image"]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().ends_with("Image"));
+    }
+
+    #[test]
+    fn test_find_file_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let result = find_file(tmp.path(), &["bzImage", "Image"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_find_init() {
+        let tmp = TempDir::new().unwrap();
+        let sys_dir = tmp.path().join("abc123-nixos-system-ryn-k3s-24.11");
+        fs::create_dir_all(&sys_dir).unwrap();
+        fs::write(sys_dir.join("init"), b"#!/nix/store/...").unwrap();
+
+        let result = find_init(tmp.path());
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("init"));
+    }
+
+    #[test]
+    fn test_find_init_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let result = find_init(tmp.path());
+        assert!(result.is_err());
+    }
+}

@@ -136,3 +136,19 @@ pub async fn updatekeys(secrets_file: &str) -> Result<()> {
     info!("re-encrypted secrets with all recipients");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_sops_key_path_format() {
+        let cluster = "ryn-k3s";
+        let server_token_path = format!("[\"clusters\"][\"{cluster}\"][\"server-token\"]");
+        assert_eq!(
+            server_token_path,
+            "[\"clusters\"][\"ryn-k3s\"][\"server-token\"]"
+        );
+
+        let age_key_path = format!("[\"clusters\"][\"{cluster}\"][\"age-key\"]");
+        assert_eq!(age_key_path, "[\"clusters\"][\"ryn-k3s\"][\"age-key\"]");
+    }
+}

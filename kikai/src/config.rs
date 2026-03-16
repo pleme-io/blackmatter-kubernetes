@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 /// Configuration for a k3s cluster lifecycle.
+#[derive(serde::Serialize)]
 pub struct ClusterConfig {
     /// Cluster name (e.g., ryn-k3s)
     pub name: String,
@@ -59,4 +60,42 @@ pub fn data_dir(cluster: &str) -> Result<PathBuf> {
 /// Return the PID file path for a cluster VM.
 pub fn pid_file(cluster: &str) -> Result<PathBuf> {
     Ok(data_dir(cluster)?.join("vm.pid"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let cfg = ClusterConfig::default();
+        assert_eq!(cfg.cpus, 4);
+        assert_eq!(cfg.memory, 8192);
+        assert_eq!(cfg.disk_size, "50G");
+        assert_eq!(cfg.api_port, 6443);
+        assert_eq!(cfg.ssh_port, 2222);
+        assert_eq!(cfg.boot_timeout_secs, 300);
+        assert_eq!(cfg.shutdown_timeout_secs, 120);
+        assert_eq!(cfg.health_interval_secs, 2);
+    }
+
+    #[test]
+    fn test_data_dir_format() {
+        std::env::set_var("HOME", "/tmp/test-home");
+        let dir = data_dir("test-cluster").unwrap();
+        assert_eq!(
+            dir.to_str().unwrap(),
+            "/tmp/test-home/.local/share/kikai/test-cluster"
+        );
+    }
+
+    #[test]
+    fn test_pid_file_format() {
+        std::env::set_var("HOME", "/tmp/test-home");
+        let pid = pid_file("test-cluster").unwrap();
+        assert_eq!(
+            pid.to_str().unwrap(),
+            "/tmp/test-home/.local/share/kikai/test-cluster/vm.pid"
+        );
+    }
 }

@@ -5,6 +5,12 @@ use tracing::info;
 use crate::config::ClusterConfig;
 use crate::sops;
 
+/// Extract the darwin host name from a cluster name.
+/// Convention: "ryn-k3s" -> "ryn", "prod-server" -> "prod"
+pub fn host_from_cluster(cluster: &str) -> &str {
+    cluster.split('-').next().unwrap_or(cluster)
+}
+
 /// Initialize cluster bootstrap secrets: age keypair, k3s server token, admin password.
 ///
 /// Stores them in SOPS and updates .sops.yaml with the VM's age public key.
@@ -68,11 +74,7 @@ pub async fn run(config: &ClusterConfig, dry_run: bool) -> Result<ExitCode> {
 
     // 5. Also store as kubeconfig token (referenced by darwin kubeconfig template)
     // Convention: ryn/kubernetes/<cluster>/token
-    let host = config
-        .name
-        .split('-')
-        .next()
-        .unwrap_or(&config.name);
+    let host = host_from_cluster(&config.name);
     sops::set(
         &config.secrets_file,
         &format!(
@@ -183,4 +185,16 @@ async fn generate_random_hex(bytes: usize) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_host_from_cluster() {
+        assert_eq!(host_from_cluster("ryn-k3s"), "ryn");
+        assert_eq!(host_from_cluster("prod-server"), "prod");
+        assert_eq!(host_from_cluster("standalone"), "standalone");
+    }
 }

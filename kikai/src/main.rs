@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
 
@@ -137,6 +137,9 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+
+    /// Print default ClusterConfig as JSON (for Nix<->Rust schema validation)
+    DumpConfig,
 
     /// Run continuous health monitoring daemon
     Daemon {
@@ -278,6 +281,14 @@ async fn run(cmd: Command, json_output: bool) -> Result<ExitCode> {
                 ..config::ClusterConfig::default()
             };
             destroy::run(&cfg, remove_secrets, force).await
+        }
+        Command::DumpConfig => {
+            let cfg = config::ClusterConfig::default();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&cfg).context("serializing config")?
+            );
+            Ok(ExitCode::SUCCESS)
         }
         Command::Daemon {
             cluster,
