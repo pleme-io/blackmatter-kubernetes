@@ -98,4 +98,22 @@ mod tests {
             "/tmp/test-home/.local/share/kikai/test-cluster/vm.pid"
         );
     }
+
+    #[test]
+    fn test_cluster_config_serializes_to_json() {
+        let cfg = ClusterConfig::default();
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"cpus\":4"));
+        assert!(json.contains("\"disk_size\":\"50G\""));
+        assert!(json.contains("\"api_port\":6443"));
+    }
+
+    #[test]
+    fn test_default_string_fields() {
+        let cfg = ClusterConfig::default();
+        assert_eq!(cfg.secrets_file, "secrets.yaml");
+        assert_eq!(cfg.sops_yaml, ".sops.yaml");
+        assert_eq!(cfg.nix_flake, ".");
+        assert!(cfg.name.is_empty());
+    }
 }

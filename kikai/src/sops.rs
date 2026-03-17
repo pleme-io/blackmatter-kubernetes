@@ -289,4 +289,31 @@ mod tests {
         std::env::remove_var("KIKAI_TEST_MISSING_FILE");
         assert!(result.is_none());
     }
+
+    #[test]
+    fn test_key_path_to_env_var_custom_key() {
+        assert_eq!(
+            key_path_to_env_var("[\"clusters\"][\"ryn-k3s\"][\"my-custom-key\"]"),
+            "KIKAI_MY_CUSTOM_KEY_FILE"
+        );
+    }
+
+    #[test]
+    fn test_all_secrets_from_env_empty() {
+        std::env::remove_var("KIKAI_SERVER_TOKEN_FILE");
+        std::env::remove_var("KIKAI_AGE_KEY_FILE");
+        std::env::remove_var("KIKAI_ADMIN_PASSWORD_FILE");
+        assert!(!all_secrets_from_env());
+    }
+
+    #[test]
+    fn test_all_secrets_from_env_partial() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "val").unwrap();
+        std::env::set_var("KIKAI_SERVER_TOKEN_FILE", tmp.path().to_str().unwrap());
+        std::env::remove_var("KIKAI_AGE_KEY_FILE");
+        std::env::remove_var("KIKAI_ADMIN_PASSWORD_FILE");
+        assert!(!all_secrets_from_env());
+        std::env::remove_var("KIKAI_SERVER_TOKEN_FILE");
+    }
 }

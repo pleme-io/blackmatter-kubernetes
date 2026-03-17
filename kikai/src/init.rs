@@ -208,4 +208,11 @@ mod tests {
         assert_eq!(host_from_cluster("prod-server"), "prod");
         assert_eq!(host_from_cluster("standalone"), "standalone");
     }
+
+    #[test]
+    fn test_host_from_cluster_edge_cases() {
+        assert_eq!(host_from_cluster(""), "");
+        assert_eq!(host_from_cluster("a-b-c-d"), "a");
+        assert_eq!(host_from_cluster("-leading"), "");
+    }
 }
