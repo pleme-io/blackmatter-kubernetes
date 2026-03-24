@@ -83,6 +83,7 @@ with lib; let
     vcluster = bm "vcluster" pkgs.vcluster;
     crossplane-cli = bm "crossplane-cli" pkgs.crossplane-cli;
     kompose = bm "kompose" pkgs.kompose;
+    kind = bm "kind" pkgs.kind;
     velero = bm "velero" pkgs.velero;
 
     # Observability
@@ -132,6 +133,7 @@ with lib; let
 in {
   imports = [
     ./k3d
+    ./kind
     ./kubectl  # Kubeconfig management, aliases, completion
     ../k9s     # K9s TUI with Nord theme
   ];

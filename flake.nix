@@ -132,7 +132,7 @@
       "kubeseal" "trivy" "grype" "cosign" "kyverno" "open-policy-agent"
       "conftest" "falcoctl" "kubescape" "kube-linter" "kubeconform" "step-cli"
       # Cluster management
-      "clusterctl" "talosctl" "vcluster" "crossplane-cli" "kompose" "kwok" "velero"
+      "clusterctl" "talosctl" "vcluster" "crossplane-cli" "kind" "kompose" "kwok" "velero"
       # GitOps & CD
       "argocd" "tektoncd-cli" "argo-rollouts" "timoni" "kapp"
       # kubectl plugins
