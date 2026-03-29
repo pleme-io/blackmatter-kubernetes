@@ -366,12 +366,15 @@ in {
       # ── Systemd service ──────────────────────────────────────────────
       systemd.services.k3s = {
         description = "k3s - Lightweight Kubernetes";
-        after = [ "network-online.target" ];
+        after = [ "network-online.target" ]
+          ++ optional (cfg.roleConditionPath != null) "kindling-init.service";
         wants = [ "network-online.target" ];
         wantedBy = [ "multi-user.target" ];
 
         # When roleConditionPath is set, only start if the server sentinel exists.
-        # Condition is evaluated at execution time, after ordering dependencies.
+        # After=kindling-init.service ensures the sentinel is written before the
+        # condition is evaluated. Requires= is NOT used so non-kindling systems
+        # still work (kindling-init just won't exist → ordering is a no-op).
         unitConfig = optionalAttrs (cfg.roleConditionPath != null) {
           ConditionPathExists = cfg.roleConditionPath.server;
         };
