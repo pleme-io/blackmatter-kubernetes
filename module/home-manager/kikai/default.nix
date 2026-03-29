@@ -38,6 +38,8 @@ let
     boot_timeout_secs = c.timeouts.boot;
     shutdown_timeout_secs = c.timeouts.shutdown;
     health_interval_secs = c.timeouts.healthInterval;
+    mac_address = c.macAddress;
+    vm_ip = c.vmIp;
   }) enabledClusters;
 in {
   options.blackmatter.components.kubernetes = {
@@ -92,6 +94,18 @@ in {
             type = lib.types.port;
             default = 2222;
             description = "Host port forwarded to guest 22 (SSH).";
+          };
+
+          macAddress = lib.mkOption {
+            type = lib.types.str;
+            default = "";
+            description = "Deterministic MAC for stable DHCP lease. Same MAC = same IP across reboots.";
+          };
+
+          vmIp = lib.mkOption {
+            type = lib.types.str;
+            default = "";
+            description = "Expected VM IP from DHCP. Used for health checks and SSH instead of localhost.";
           };
 
           nixFlake = lib.mkOption {
