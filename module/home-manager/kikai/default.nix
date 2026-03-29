@@ -230,6 +230,10 @@ in {
             KIKAI_AGE_KEY_FILE = clusterCfg.decryptedSecrets.ageKey;
           } // lib.optionalAttrs (clusterCfg.decryptedSecrets.adminPassword != null) {
             KIKAI_ADMIN_PASSWORD_FILE = clusterCfg.decryptedSecrets.adminPassword;
+          } // lib.optionalAttrs (clusterCfg.macAddress != "") {
+            KIKAI_MAC_ADDRESS = clusterCfg.macAddress;
+          } // lib.optionalAttrs (clusterCfg.vmIp != "") {
+            KIKAI_VM_IP = clusterCfg.vmIp;
           };
         };
       }
