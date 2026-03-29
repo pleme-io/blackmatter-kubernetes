@@ -292,6 +292,20 @@ in {
       };
     };
 
+    roleConditionPath = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        Path to a sentinel file that determines server vs agent mode at boot.
+        When set, k3s.service only starts if this file EXISTS (server mode),
+        and k3s-agent.service only starts if it does NOT exist (agent mode).
+        The init service (e.g. kindling-init) creates or removes this file
+        before either K3s service starts, making role selection race-free
+        via systemd ConditionPathExists.
+      '';
+      example = "/var/lib/kindling/server-mode";
+    };
+
     nvidia = {
       enable = mkOption {
         type = types.bool;
@@ -345,6 +359,13 @@ in {
         wants = [ "network-online.target" ];
         wantedBy = [ "multi-user.target" ];
 
+        # When roleConditionPath is set, only start if the sentinel file
+        # exists (server mode). Condition is evaluated at execution time,
+        # AFTER all ordering dependencies (Before=/After=) are satisfied.
+        unitConfig = optionalAttrs (cfg.roleConditionPath != null) {
+          ConditionPathExists = cfg.roleConditionPath;
+        };
+
         path = [ cfg.package ];
 
         serviceConfig = {
@@ -369,13 +390,20 @@ in {
         };
       };
 
-      # ── K3s agent service (disabled by default, activated by kindling-init) ──
+      # ── K3s agent service ──────────────────────────────────────────
       systemd.services.k3s-agent = mkIf cfg.agent.enable {
         description = "K3s agent — lightweight Kubernetes worker node";
         after = [ "network-online.target" "kindling-init.service" ];
         wants = [ "network-online.target" ];
         conflicts = [ "k3s.service" ];
-        # NOT in wantedBy — kindling-init enables it when role=agent
+
+        # When roleConditionPath is set, both services are in wantedBy and
+        # ConditionPathExists selects exactly one at boot — no runtime
+        # systemctl commands needed.
+        wantedBy = optional (cfg.roleConditionPath != null) "multi-user.target";
+        unitConfig = optionalAttrs (cfg.roleConditionPath != null) {
+          ConditionPathExists = "!${cfg.roleConditionPath}";
+        };
 
         path = [ cfg.package ];
 
