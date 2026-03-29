@@ -284,6 +284,14 @@ in {
 
     waitForDNS = base.mkWaitForDNSOptions { description = "k3s"; };
 
+    agent = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable K3s agent mode service (k3s-agent.service)";
+      };
+    };
+
     nvidia = {
       enable = mkOption {
         type = types.bool;
@@ -358,6 +366,35 @@ in {
         }
         // optionalAttrs cfg.nvidia.enable {
           ExecStartPost = nvidiaPostStartScript;
+        };
+      };
+
+      # ── K3s agent service (disabled by default, activated by kindling-init) ──
+      systemd.services.k3s-agent = mkIf cfg.agent.enable {
+        description = "K3s agent — lightweight Kubernetes worker node";
+        after = [ "network-online.target" "kindling-init.service" ];
+        wants = [ "network-online.target" ];
+        conflicts = [ "k3s.service" ];
+        # NOT in wantedBy — kindling-init enables it when role=agent
+
+        path = [ cfg.package ];
+
+        serviceConfig = {
+          Type = "notify";
+          ExecStart = "${cfg.package}/bin/k3s agent"
+            + (if cfg.configPath != null then " --config ${cfg.configPath}" else "");
+          KillMode = "process";
+          Delegate = "yes";
+          Restart = "always";
+          RestartSec = 5;
+          LimitNOFILE = 1048576;
+          LimitNPROC = "infinity";
+          LimitCORE = "infinity";
+          TasksMax = "infinity";
+          TimeoutStartSec = 0;
+        }
+        // optionalAttrs (cfg.environmentFile != null) {
+          EnvironmentFile = cfg.environmentFile;
         };
       };
 
