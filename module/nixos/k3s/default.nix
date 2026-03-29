@@ -293,17 +293,28 @@ in {
     };
 
     roleConditionPath = mkOption {
-      type = types.nullOr types.str;
+      type = types.nullOr (types.submodule {
+        options = {
+          server = mkOption {
+            type = types.str;
+            description = "Sentinel file for server mode. k3s.service starts only if this file exists.";
+            example = "/var/lib/kindling/server-mode";
+          };
+          agent = mkOption {
+            type = types.str;
+            description = "Sentinel file for agent mode. k3s-agent.service starts only if this file exists.";
+            example = "/var/lib/kindling/agent-mode";
+          };
+        };
+      });
       default = null;
       description = ''
-        Path to a sentinel file that determines server vs agent mode at boot.
-        When set, k3s.service only starts if this file EXISTS (server mode),
-        and k3s-agent.service only starts if it does NOT exist (agent mode).
-        The init service (e.g. kindling-init) creates or removes this file
-        before either K3s service starts, making role selection race-free
-        via systemd ConditionPathExists.
+        Sentinel file paths for race-free server/agent role selection.
+        When set, each K3s service only starts if its sentinel file exists.
+        The init service creates exactly one sentinel before either service
+        starts, and systemd ConditionPathExists selects the correct one.
+        If neither sentinel exists (e.g. AMI build), neither service starts.
       '';
-      example = "/var/lib/kindling/server-mode";
     };
 
     nvidia = {
@@ -359,11 +370,10 @@ in {
         wants = [ "network-online.target" ];
         wantedBy = [ "multi-user.target" ];
 
-        # When roleConditionPath is set, only start if the sentinel file
-        # exists (server mode). Condition is evaluated at execution time,
-        # AFTER all ordering dependencies (Before=/After=) are satisfied.
+        # When roleConditionPath is set, only start if the server sentinel exists.
+        # Condition is evaluated at execution time, after ordering dependencies.
         unitConfig = optionalAttrs (cfg.roleConditionPath != null) {
-          ConditionPathExists = cfg.roleConditionPath;
+          ConditionPathExists = cfg.roleConditionPath.server;
         };
 
         path = [ cfg.package ];
@@ -399,10 +409,11 @@ in {
 
         # When roleConditionPath is set, both services are in wantedBy and
         # ConditionPathExists selects exactly one at boot — no runtime
-        # systemctl commands needed.
+        # systemctl commands needed. If neither sentinel exists (AMI build),
+        # neither service starts.
         wantedBy = optional (cfg.roleConditionPath != null) "multi-user.target";
         unitConfig = optionalAttrs (cfg.roleConditionPath != null) {
-          ConditionPathExists = "!${cfg.roleConditionPath}";
+          ConditionPathExists = cfg.roleConditionPath.agent;
         };
 
         path = [ cfg.package ];
