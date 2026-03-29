@@ -17,13 +17,18 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.substrate.follows = "substrate";
     };
+    kikai = {
+      url = "github:pleme-io/kikai";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.substrate.follows = "substrate";
+    };
     devenv = {
       url = "github:cachix/devenv";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, fenix, substrate, blackmatter-go, devenv }:
+  outputs = { self, nixpkgs, fenix, substrate, blackmatter-go, kikai, devenv }:
   let
     # k3s + k8s + tools are Linux-only; HM modules are cross-platform
     linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
@@ -127,7 +132,7 @@
       "kubeseal" "trivy" "grype" "cosign" "kyverno" "open-policy-agent"
       "conftest" "falcoctl" "kubescape" "kube-linter" "kubeconform" "step-cli"
       # Cluster management
-      "clusterctl" "talosctl" "vcluster" "crossplane-cli" "kompose" "kwok" "velero"
+      "clusterctl" "talosctl" "vcluster" "crossplane-cli" "kind" "kompose" "kwok" "velero"
       # GitOps & CD
       "argocd" "tektoncd-cli" "argo-rollouts" "timoni" "kapp"
       # kubectl plugins
@@ -189,6 +194,9 @@
     # ── Overlay ─────────────────────────────────────────────────────
     overlays.default = nixpkgs.lib.composeManyExtensions [
       goOverlay
+      (final: prev: {
+        blackmatter-kikai = kikai.packages.${final.stdenv.hostPlatform.system}.default;
+      })
       (final: prev: let
         tools = import ./pkgs/tools { inherit mkGoTool; pkgs = final; };
         network = import ./pkgs/network { inherit mkGoTool; pkgs = final; };
@@ -276,7 +284,10 @@
         value = pkgs.${"blackmatter-${name}-${suffix}"};
       }) comps) allTracks);
 
-    in { default = pkgs.blackmatter-kubectl; }
+      # kikai — from pleme-io/kikai standalone repo
+      kikaiPkg = kikai.packages.${system}.default;
+
+    in { default = pkgs.blackmatter-kubectl; kikai = kikaiPkg; }
     // mkPkgsFrom crossPlatformTools
     // lib.optionalAttrs isLinux (mkPkgsFrom linuxOnlyTools)
     // lib.optionalAttrs isLinux (
