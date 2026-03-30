@@ -187,6 +187,16 @@ in {
       default = null;
       description = "SSH known hosts content (defaults to GitHub's public keys). Only used with auth = ssh.";
     };
+
+    conditionPath = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        Path to sentinel file for FluxCD activation. When set,
+        fluxcd-bootstrap.service only starts if this file exists.
+        kindling-init creates the sentinel after writing secrets.
+      '';
+    };
   };
 
   config = mkIf cfg.enable {
@@ -196,15 +206,15 @@ in {
         message = "services.blackmatter.fluxcd requires services.blackmatter.k3s to be enabled";
       }
       {
-        assertion = cfg.source.url != "";
+        assertion = cfg.conditionPath != null || cfg.source.url != "";
         message = "services.blackmatter.fluxcd.source.url must be set";
       }
       {
-        assertion = !isSSH || cfg.source.sshKeyFile != null;
+        assertion = cfg.conditionPath != null || !isSSH || cfg.source.sshKeyFile != null;
         message = "services.blackmatter.fluxcd.source.sshKeyFile is required when auth = ssh";
       }
       {
-        assertion = !isToken || cfg.source.tokenFile != null;
+        assertion = cfg.conditionPath != null || !isToken || cfg.source.tokenFile != null;
         message = "services.blackmatter.fluxcd.source.tokenFile is required when auth = token";
       }
       {
@@ -222,8 +232,11 @@ in {
     # Post-k3s service: creates Kubernetes Secrets from host files
     systemd.services.fluxcd-bootstrap = {
       description = "Bootstrap FluxCD secrets into Kubernetes";
-      after = [ "k3s.service" ];
+      after = [ "k3s.service" ] ++ optional (cfg.conditionPath != null) "kindling-init.service";
       requires = [ "k3s.service" ];
+      unitConfig = mkIf (cfg.conditionPath != null) {
+        ConditionPathExists = cfg.conditionPath;
+      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
