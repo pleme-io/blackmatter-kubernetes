@@ -1,17 +1,27 @@
 # NixOS FluxCD bootstrap module
 #
-# Declarative FluxCD deployment via k3s auto-deploy manifests.
+# Declarative FluxCD deployment for any Kubernetes cluster.
 # Generates component manifests from the flux CLI, writes sync config,
 # and creates Kubernetes secrets from sops-nix managed host files.
+#
+# Supports two orchestrators:
+#   - K3s:      manifests via auto-deploy directory, depends on k3s.service
+#   - kubeadm:  manifests via kubectl apply, depends on kubelet.service
 #
 # Supports two auth methods:
 #   - ssh:   SSH deploy key (identity + known_hosts secret)
 #   - token: HTTPS personal access token (username + password secret)
 #
-# Boot sequence:
+# Boot sequence (K3s):
 #   systemd-tmpfiles → writes manifests to k3s server/manifests/
 #   k3s.service starts → applies gotk-components + gotk-sync
 #   fluxcd-bootstrap.service → creates git auth + SOPS age key secrets
+#   source-controller retries → auth secret exists → pulls git repo
+#   kustomize-controller → reconciles cluster path → full cluster state
+#
+# Boot sequence (kubeadm):
+#   kubelet.service starts → kubeadm init/join completes (via kindling-init)
+#   fluxcd-bootstrap.service → applies gotk-components + gotk-sync + secrets
 #   source-controller retries → auth secret exists → pulls git repo
 #   kustomize-controller → reconciles cluster path → full cluster state
 { nixosHelpers }:
@@ -25,6 +35,19 @@ let
 
   isSSH = cfg.source.auth == "ssh";
   isToken = cfg.source.auth == "token";
+
+  # Detect which Kubernetes orchestrator is active.
+  # K3s module is always imported via blackmatter aggregator.
+  # The kubernetes module may or may not be imported.
+  isK3s = config.services.blackmatter.k3s.enable;
+  isK8s = (config.services.blackmatter.kubernetes.enable or false)
+    || (config.virtualisation.containerd.enable or false);
+
+  # Orchestrator-specific configuration
+  k8sService = if isK3s then "k3s.service" else "kubelet.service";
+  kubeconfig = if isK3s
+    then "/etc/rancher/k3s/k3s.yaml"
+    else "/etc/kubernetes/admin.conf";
 
   # Generate FluxCD component manifests from the flux CLI.
   # Manifests are embedded in the binary at build time — no network needed.
@@ -202,8 +225,8 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = config.services.blackmatter.k3s.enable;
-        message = "services.blackmatter.fluxcd requires services.blackmatter.k3s to be enabled";
+        assertion = isK3s || isK8s;
+        message = "services.blackmatter.fluxcd requires either services.blackmatter.k3s or a Kubernetes orchestrator (kubeadm/containerd) to be enabled";
       }
       {
         assertion = cfg.conditionPath != null || cfg.source.url != "";
@@ -223,17 +246,19 @@ in {
       }
     ];
 
-    # Write FluxCD manifests to k3s auto-deploy directory
-    services.blackmatter.k3s.manifests = {
+    # K3s: write FluxCD manifests to auto-deploy directory.
+    # K3s applies these automatically when it starts.
+    services.blackmatter.k3s.manifests = mkIf isK3s {
       "gotk-components" = { content = builtins.readFile fluxManifests; };
       "gotk-sync" = { content = syncManifest; };
     };
 
-    # Post-k3s service: creates Kubernetes Secrets from host files
+    # Bootstrap service: creates Kubernetes Secrets and (for non-K3s)
+    # applies FluxCD component manifests via kubectl.
     systemd.services.fluxcd-bootstrap = {
       description = "Bootstrap FluxCD secrets into Kubernetes";
-      after = [ "k3s.service" ] ++ optional (cfg.conditionPath != null) "kindling-init.service";
-      requires = [ "k3s.service" ];
+      after = [ k8sService ] ++ optional (cfg.conditionPath != null) "kindling-init.service";
+      requires = [ k8sService ];
       unitConfig = mkIf (cfg.conditionPath != null) {
         ConditionPathExists = cfg.conditionPath;
       };
@@ -241,7 +266,7 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = pkgs.writeShellScript "fluxcd-bootstrap" ''
-          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          export KUBECONFIG=${kubeconfig}
           export PATH=${makeBinPath [ (pkgs.blackmatter-kubectl or pkgs.kubectl) pkgs.coreutils ]}:$PATH
 
           # Wait for API server
@@ -253,6 +278,15 @@ in {
 
           # Create namespace
           kubectl create namespace flux-system --dry-run=client -o yaml | kubectl apply -f -
+
+          ${optionalString (!isK3s) ''
+            # Apply FluxCD component manifests (K3s does this via auto-deploy)
+            echo "Applying FluxCD components via kubectl..."
+            kubectl apply -f ${fluxManifests}
+
+            echo "Applying FluxCD sync manifest..."
+            kubectl apply -f ${pkgs.writeText "gotk-sync.yaml" syncManifest}
+          ''}
 
           # Create git auth secret
           ${gitAuthSecretCmd}
