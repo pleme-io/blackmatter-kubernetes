@@ -248,10 +248,17 @@ in {
 
     # K3s: write FluxCD manifests to auto-deploy directory.
     # K3s applies these automatically when it starts.
-    services.blackmatter.k3s.manifests = mkIf isK3s {
-      "gotk-components" = { content = builtins.readFile fluxManifests; };
-      "gotk-sync" = { content = syncManifest; };
-    };
+    #
+    # gotk-components (CRDs + controllers): ALWAYS baked — cluster-agnostic.
+    # gotk-sync (GitRepository + Kustomization): baked ONLY when NOT in
+    # kindling-gated mode. In kindling-gated mode, kindling-init writes
+    # the sync manifest at runtime with the actual repo URL from ClusterConfig.
+    services.blackmatter.k3s.manifests = mkIf isK3s (
+      { "gotk-components" = { content = builtins.readFile fluxManifests; }; }
+      // optionalAttrs (cfg.conditionPath == null) {
+        "gotk-sync" = { content = syncManifest; };
+      }
+    );
 
     # Bootstrap service: creates Kubernetes Secrets and (for non-K3s)
     # applies FluxCD component manifests via kubectl.
