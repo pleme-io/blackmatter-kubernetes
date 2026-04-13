@@ -27,6 +27,7 @@ let
 
   # Generate clusters.yaml content (snake_case for Rust serde)
   clustersYaml = lib.mapAttrs (_name: c: {
+    vm_mode = c.vmMode;
     cpus = c.cpus;
     memory = c.memory;
     disk_size = c.diskSize;
@@ -65,6 +66,12 @@ in {
       type = lib.types.attrsOf (lib.types.submodule {
         options = {
           enable = lib.mkEnableOption "this k3s VM cluster";
+
+          vmMode = lib.mkOption {
+            type = lib.types.enum [ "k3s" "builder" ];
+            default = "k3s";
+            description = "VM mode: 'k3s' for K3s clusters, 'builder' for Nix remote builders (SSH + nix-daemon health checks only).";
+          };
 
           cpus = lib.mkOption {
             type = lib.types.ints.between 1 32;
