@@ -1,0 +1,33 @@
+schema_version: 1
+manifest:
+  name: blackmatter-kubernetes
+  kind: BlackmatterComponent
+  archetype: blackmatter-component-custom-multimodule
+  description: K3s/K8s/k3d + 80+ kubernetes CLI tools, cluster bootstrap, and profile matrix.
+  custom_flake: true
+  custom_flake_reason: |
+    Multi-module NixOS set (k3s, kubectl, fluxcd, kubernetes), versioned overlay
+    across 6 tracks, Linux-only vs cross-platform systems split, profile evaluation
+    checks, VM integration tests. Largest and most feature-rich blackmatter repo —
+    custom flake is correct.
+dimensions:
+  vocabulary: [kubernetes, k3s, k8s, fluxcd, helm, cilium, flannel, calico]
+  domains: [Nix, Go, YAML]
+  stack: [HomeManager, NixOS]
+  modules:
+    home_manager: module/home-manager/
+    nixos_k3s: module/nixos/k3s/
+    nixos_kubectl: module/nixos/kubectl/
+    nixos_fluxcd: module/nixos/fluxcd/
+    nixos_kubernetes: module/nixos/kubernetes/
+  render:
+    produces:
+      - "80+ versioned kubernetes CLI packages"
+      - "versioned k3s + k8s component packages (6 tracks)"
+      - "profile package bundles (k3s-profile-*, k8s-profile-*)"
+  compliance:
+    satisfies: []
+    participates: [container-security]
+  dag:
+    inputs: [nixpkgs, fenix, substrate, blackmatter-go, kikai]
+  attestation: { merkle_root: null, signed_by: null, producer: custom-flake }
