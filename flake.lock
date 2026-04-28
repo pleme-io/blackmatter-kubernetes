@@ -11,11 +11,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1776918648,
-        "narHash": "sha256-k+VlwLVMWh3LB2aHPyudbNfG60osniZ3e6QOLk19qGg=",
+        "lastModified": 1777326882,
+        "narHash": "sha256-xmevTbFe456xoY+hahFekDIt2W1gUmSX0IlQW0e9+1c=",
         "owner": "pleme-io",
         "repo": "blackmatter-go",
-        "rev": "7acb99f930234a8e0a1cd73dad2f3e7eb1d55a4f",
+        "rev": "89d9b793ccfb8a7130ce66d58e773f61cb4f9968",
         "type": "github"
       },
       "original": {
