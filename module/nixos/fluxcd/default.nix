@@ -37,9 +37,19 @@ let
   isToken = cfg.source.auth == "token";
 
   # Detect which Kubernetes orchestrator is active.
-  # K3s module is always imported via blackmatter aggregator.
-  # The kubernetes module may or may not be imported.
-  isK3s = config.services.blackmatter.k3s.enable;
+  #
+  # Two K3s entry points are supported:
+  #   1. services.blackmatter.k3s.enable — the heavy wrapper this repo
+  #      ships, exposes services.blackmatter.k3s.manifests for tmpfiles
+  #      auto-deploy plumbing.
+  #   2. services.k3s.enable — NixOS stock module. Used by lean profiles
+  #      (kindling-profiles' k3s-cloud-server-ssm) that don't want the
+  #      blackmatter.k3s wrapper's full surface. Same on-disk manifests
+  #      directory, just no shared option to declare them — the fluxcd
+  #      module writes tmpfiles rules directly on this branch.
+  isHeavyK3s = config.services.blackmatter.k3s.enable;
+  isStockK3s = (config.services.k3s.enable or false) && !isHeavyK3s;
+  isK3s = isHeavyK3s || isStockK3s;
   isK8s = (config.services.blackmatter.kubernetes.enable or false)
     || (config.virtualisation.containerd.enable or false);
 
@@ -246,18 +256,35 @@ in {
       }
     ];
 
-    # K3s: write FluxCD manifests to auto-deploy directory.
+    # K3s: write FluxCD manifests to the auto-deploy directory.
     # K3s applies these automatically when it starts.
     #
     # gotk-components (CRDs + controllers): ALWAYS baked — cluster-agnostic.
     # gotk-sync (GitRepository + Kustomization): baked ONLY when NOT in
-    # kindling-gated mode. In kindling-gated mode, kindling-init writes
-    # the sync manifest at runtime with the actual repo URL from ClusterConfig.
-    services.blackmatter.k3s.manifests = mkIf isK3s (
+    # kindling-gated mode. In kindling-gated mode, kindling-init (or
+    # k3s-bootstrap.tlisp on the SSM-runtime path) writes the sync
+    # manifest at runtime with the actual repo URL from ClusterConfig
+    # / SSM.
+    #
+    # Two implementations of the same on-disk shape, depending on
+    # which K3s entry point is in use:
+
+    # Heavy K3s: hand the manifests to services.blackmatter.k3s, which
+    # owns the tmpfiles plumbing.
+    services.blackmatter.k3s.manifests = mkIf isHeavyK3s (
       { "gotk-components" = { content = builtins.readFile fluxManifests; }; }
       // optionalAttrs (cfg.conditionPath == null) {
         "gotk-sync" = { content = syncManifest; };
       }
+    );
+
+    # Stock NixOS services.k3s: write tmpfiles rules directly. Mirrors
+    # the heavy module's shape exactly (Type=C, paths under
+    # /var/lib/rancher/k3s/server/manifests/).
+    systemd.tmpfiles.rules = mkIf isStockK3s (
+      [ "C /var/lib/rancher/k3s/server/manifests/gotk-components.yaml - - - - ${fluxManifests}" ]
+      ++ optional (cfg.conditionPath == null)
+        "C /var/lib/rancher/k3s/server/manifests/gotk-sync.yaml - - - - ${pkgs.writeText "gotk-sync.yaml" syncManifest}"
     );
 
     # Bootstrap service: creates Kubernetes Secrets and (for non-K3s)
