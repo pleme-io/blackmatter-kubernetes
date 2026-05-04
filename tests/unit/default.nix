@@ -1685,4 +1685,214 @@ in runTests [
   in mkTest "runtime-component-factory-default-platforms"
     (result.meta.platforms == lib.platforms.linux)
     "mkRuntimeComponent should default to lib.platforms.linux")
+
+  # ── CIS hardening flag emission ─────────────────────────────────────
+  # Introspect via the read-only services.blackmatter.k3s._computed
+  # attrset — avoids forcing pkgs/package evaluation during unit tests.
+
+  (mkTest "cis-hardening-disabled-by-default-no-read-only-port-flag"
+    (let flags = (evalModule { enable = true; }).services.blackmatter.k3s._computed.cisKubeletFlags;
+     in !(lib.any (f: lib.hasInfix "read-only-port=0" f) flags))
+    "cisHardening.enable=false should NOT emit --kubelet-arg=read-only-port=0")
+
+  (mkTest "cis-hardening-enable-adds-read-only-port-flag"
+    (let flags = (evalModule {
+           enable = true;
+           cisHardening.enable = true;
+         }).services.blackmatter.k3s._computed.cisKubeletFlags;
+     in lib.elem "--kubelet-arg=read-only-port=0" flags)
+    "cisHardening.enable=true should emit read-only-port=0 (CIS 4.2.4)")
+
+  (mkTest "cis-hardening-enable-adds-anon-auth-flag"
+    (let flags = (evalModule {
+           enable = true;
+           cisHardening.enable = true;
+         }).services.blackmatter.k3s._computed.cisKubeletFlags;
+     in lib.elem "--kubelet-arg=anonymous-auth=false" flags)
+    "cisHardening.enable=true should emit anonymous-auth=false (CIS 4.2.1)")
+
+  (mkTest "cis-hardening-enable-adds-authz-webhook-flag"
+    (let flags = (evalModule {
+           enable = true;
+           cisHardening.enable = true;
+         }).services.blackmatter.k3s._computed.cisKubeletFlags;
+     in lib.elem "--kubelet-arg=authorization-mode=Webhook" flags)
+    "cisHardening.enable=true should emit authorization-mode=Webhook (CIS 4.2.2)")
+
+  (mkTest "cis-hardening-protect-kernel-defaults-is-opt-in"
+    (let flags1 = (evalModule {
+           enable = true;
+           cisHardening.enable = true;
+         }).services.blackmatter.k3s._computed.cisKubeletFlags;
+         flags2 = (evalModule {
+           enable = true;
+           cisHardening.enable = true;
+           cisHardening.protectKernelDefaults = true;
+         }).services.blackmatter.k3s._computed.cisKubeletFlags;
+     in !(lib.any (f: lib.hasInfix "protect-kernel-defaults" f) flags1)
+        && lib.elem "--protect-kernel-defaults=true" flags2)
+    "protectKernelDefaults is opt-in (CIS L2/FedRAMP, not base L1)")
+
+  # ── Audit policy flag emission ──────────────────────────────────────
+
+  (mkTest "audit-policy-disabled-by-default-no-audit-flags"
+    (let flags = (evalModule { enable = true; }).services.blackmatter.k3s._computed.auditApiserverFlags;
+     in flags == [])
+    "auditPolicy.enable=false should emit no audit-* apiserver flags")
+
+  (mkTest "audit-policy-enabled-emits-five-apiserver-flags"
+    (let flags = (evalModule {
+           enable = true;
+           auditPolicy.enable = true;
+           auditPolicy.policyPath = "/etc/k3s/audit-policy.yaml";
+           auditPolicy.logMaxAgeDays = 90;
+         }).services.blackmatter.k3s._computed.auditApiserverFlags;
+     in builtins.length flags == 5
+        && lib.elem "--kube-apiserver-arg=audit-policy-file=/etc/k3s/audit-policy.yaml" flags
+        && lib.elem "--kube-apiserver-arg=audit-log-path=/var/log/k3s-audit.log" flags
+        && lib.elem "--kube-apiserver-arg=audit-log-maxage=90" flags)
+    "auditPolicy.enable=true with policyPath should emit all 5 apiserver audit flags")
+
+  # ── Seccomp runtime_default wiring ──────────────────────────────────
+
+  (mkTest "seccomp-unconfined-default-no-seccomp-flag"
+    (let flags = (evalModule { enable = true; }).services.blackmatter.k3s._computed.cisKubeletFlags;
+     in !(lib.any (f: lib.hasInfix "seccomp-default" f) flags))
+    "seccompProfile.kind=unconfined should NOT emit seccomp-default flag")
+
+  (mkTest "seccomp-runtime-default-emits-kubelet-flag"
+    (let flags = (evalModule {
+           enable = true;
+           seccompProfile.kind = "runtime_default";
+         }).services.blackmatter.k3s._computed.cisKubeletFlags;
+     in lib.elem "--kubelet-arg=seccomp-default=true" flags)
+    "seccompProfile.kind=runtime_default should emit seccomp-default=true (CIS L2+)")
+
+  # ── roleSentinels multi-role wiring ─────────────────────────────────
+
+  (mkTest "role-sentinels-empty-by-default"
+    (let cfg = (evalModule { enable = true; }).services.blackmatter.k3s;
+     in cfg.roleSentinels == {})
+    "roleSentinels default is empty attrset")
+
+  (mkTest "role-sentinels-server-init-sets-k3s-condition"
+    (let paths = (evalModule {
+           enable = true;
+           roleSentinels."server-init" = "/var/lib/kindling/role-server-init";
+         }).services.blackmatter.k3s._computed.serverSentinelPaths;
+     in paths == [ "/var/lib/kindling/role-server-init" ])
+    "server-init sentinel should appear in k3s.service server sentinel path list")
+
+  (mkTest "role-sentinels-multiple-server-variants-or-semantics"
+    (let paths = (evalModule {
+           enable = true;
+           roleSentinels = {
+             "server-init" = "/var/lib/kindling/role-server-init";
+             "server-join" = "/var/lib/kindling/role-server-join";
+           };
+         }).services.blackmatter.k3s._computed.serverSentinelPaths;
+     in builtins.length paths == 2
+        && lib.elem "/var/lib/kindling/role-server-init" paths
+        && lib.elem "/var/lib/kindling/role-server-join" paths)
+    "both server-* sentinels produce repeated ConditionPathExists (systemd OR-semantics)")
+
+  (mkTest "role-sentinels-agent-appears-in-agent-paths-only"
+    (let serverPaths = (evalModule {
+           enable = true;
+           agent.enable = true;
+           roleSentinels."agent" = "/var/lib/kindling/role-agent";
+         }).services.blackmatter.k3s._computed.serverSentinelPaths;
+         agentPaths = (evalModule {
+           enable = true;
+           agent.enable = true;
+           roleSentinels."agent" = "/var/lib/kindling/role-agent";
+         }).services.blackmatter.k3s._computed.agentSentinelPaths;
+     in serverPaths == []
+        && agentPaths == [ "/var/lib/kindling/role-agent" ])
+    "agent sentinel routes to agent paths, not server paths")
+
+  (mkTest "role-sentinels-agent-gpu-routes-to-agent-not-server"
+    (let agentPaths = (evalModule {
+           enable = true;
+           agent.enable = true;
+           roleSentinels."agent-gpu" = "/var/lib/kindling/role-agent-gpu";
+         }).services.blackmatter.k3s._computed.agentSentinelPaths;
+     in lib.elem "/var/lib/kindling/role-agent-gpu" agentPaths)
+    "agent-gpu sentinel routes to agent paths")
+
+  # ── Assertion invariants ────────────────────────────────────────────
+
+  (mkTest "assertion-legacy-and-multi-role-sentinels-mutually-exclusive"
+    (let asserts = (evalModule {
+           enable = true;
+           roleConditionPath = {
+             server = "/var/lib/kindling/server-mode";
+             agent = "/var/lib/kindling/agent-mode";
+           };
+           roleSentinels."server-init" = "/var/lib/kindling/role-server-init";
+         }).assertions;
+         failing = builtins.filter (a: !a.assertion) asserts;
+     in builtins.length failing >= 1)
+    "setting both roleConditionPath and roleSentinels should fail assertion")
+
+  (mkTest "assertion-unknown-role-sentinel-key-rejected"
+    (let asserts = (evalModule {
+           enable = true;
+           roleSentinels."bogus-role" = "/var/lib/kindling/bogus";
+         }).assertions;
+         failing = builtins.filter (a: !a.assertion) asserts;
+     in builtins.length failing >= 1)
+    "unknown roleSentinels key should fail assertion")
+
+  (mkTest "assertion-audit-enable-without-policy-path-fails"
+    (let asserts = (evalModule {
+           enable = true;
+           auditPolicy.enable = true;
+           # policyPath intentionally null
+         }).assertions;
+         failing = builtins.filter (a: !a.assertion) asserts;
+     in builtins.length failing >= 1)
+    "auditPolicy.enable=true without policyPath should fail assertion")
+
+  (mkTest "assertion-seccomp-localhost-without-path-fails"
+    (let asserts = (evalModule {
+           enable = true;
+           seccompProfile.kind = "localhost";
+           # path intentionally null
+         }).assertions;
+         failing = builtins.filter (a: !a.assertion) asserts;
+     in builtins.length failing >= 1)
+    "seccompProfile.kind=localhost without path should fail assertion")
+
+  (mkTest "assertion-agent-sentinel-requires-agent-enable"
+    (let asserts = (evalModule {
+           enable = true;
+           # agent.enable defaults to false
+           roleSentinels."agent" = "/var/lib/kindling/role-agent";
+         }).assertions;
+         failing = builtins.filter (a: !a.assertion) asserts;
+     in builtins.length failing >= 1)
+    "agent-* sentinel with agent.enable=false should fail assertion")
+
+  (mkTest "valid-multi-role-config-passes-all-assertions"
+    (let asserts = (evalModule {
+           enable = true;
+           agent.enable = true;
+           cisHardening.enable = true;
+           cisHardening.protectKernelDefaults = true;
+           auditPolicy.enable = true;
+           auditPolicy.policyPath = "/etc/k3s/audit-policy.yaml";
+           auditPolicy.logMaxAgeDays = 90;
+           seccompProfile.kind = "runtime_default";
+           roleSentinels = {
+             "server-init" = "/var/lib/kindling/role-server-init";
+             "server-join" = "/var/lib/kindling/role-server-join";
+             "agent" = "/var/lib/kindling/role-agent";
+             "agent-gpu" = "/var/lib/kindling/role-agent-gpu";
+             "agent-storage" = "/var/lib/kindling/role-agent-storage";
+             "agent-ingress" = "/var/lib/kindling/role-agent-ingress";
+           };
+         }).assertions;
+     in lib.all (a: a.assertion) asserts)
+    "FedRAMP-shaped config with all 6 role sentinels should pass every assertion")
 ]

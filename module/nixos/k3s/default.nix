@@ -24,6 +24,41 @@ let
 
   disableFlags = map (comp: "--disable ${comp}") cfg.disable;
 
+  # ── CIS hardening auto-appended flags ──────────────────────────────
+  # Each knob maps to a specific CIS Kubernetes Benchmark control. Flags
+  # are inserted via `mkDefault`-driven extraFlags so user config can
+  # still suppress any individual knob.
+  cisKubeletFlags =
+    optional cfg.cisHardening.readOnlyPortDisabled "--kubelet-arg=read-only-port=0"
+    ++ optional cfg.cisHardening.anonymousAuthDisabled "--kubelet-arg=anonymous-auth=false"
+    ++ optional cfg.cisHardening.authorizationModeWebhook "--kubelet-arg=authorization-mode=Webhook"
+    ++ optional cfg.cisHardening.makeIptablesUtilChains "--kubelet-arg=make-iptables-util-chains=true"
+    ++ optional cfg.cisHardening.protectKernelDefaults "--protect-kernel-defaults=true"
+    # Seccomp default: runtime_default enables kubelet --seccomp-default,
+    # which makes every pod inherit the container runtime's restrictive
+    # profile unless explicitly overridden. Required at CIS Level 2+.
+    ++ optional (cfg.seccompProfile.kind == "runtime_default") "--kubelet-arg=seccomp-default=true";
+
+  # ── Audit policy flags (apiserver) ─────────────────────────────────
+  auditPolicyFile =
+    if cfg.auditPolicy.enable && cfg.auditPolicy.policyPath != null
+    then cfg.auditPolicy.policyPath
+    else null;
+
+  auditApiserverFlags =
+    optional (cfg.auditPolicy.enable && auditPolicyFile != null)
+      "--kube-apiserver-arg=audit-policy-file=${auditPolicyFile}"
+    ++ optional cfg.auditPolicy.enable
+      "--kube-apiserver-arg=audit-log-path=${cfg.auditPolicy.logPath}"
+    ++ optional cfg.auditPolicy.enable
+      "--kube-apiserver-arg=audit-log-maxage=${toString cfg.auditPolicy.logMaxAgeDays}"
+    ++ optional cfg.auditPolicy.enable
+      "--kube-apiserver-arg=audit-log-maxbackup=${toString cfg.auditPolicy.logMaxBackups}"
+    ++ optional cfg.auditPolicy.enable
+      "--kube-apiserver-arg=audit-log-maxsize=${toString cfg.auditPolicy.logMaxSizeMb}";
+
+  hardeningFlags = cisKubeletFlags ++ auditApiserverFlags;
+
   serverFlags =
     disableFlags
     ++ [ "--cluster-cidr ${cfg.clusterCIDR}" ]
@@ -46,8 +81,11 @@ let
       "--containerd-config-template ${
         pkgs.writeText "containerd-config-template.toml" cfg.containerdConfigTemplate
       }"
+    ++ hardeningFlags
     ++ cfg.extraFlags;
 
+  # Agents only accept kubelet-level hardening (apiserver flags are
+  # server-only); CIS kubelet knobs apply here too.
   agentFlags =
     [ "--data-dir ${cfg.dataDir}" ]
     ++ optional (cfg.serverAddr != "") "--server ${cfg.serverAddr}"
@@ -58,7 +96,30 @@ let
     ++ map (t: "--node-taint ${t}") cfg.nodeTaint
     ++ optional (cfg.nodeIP != null) "--node-ip ${cfg.nodeIP}"
     ++ optional (cfg.configPath != null) "--config ${cfg.configPath}"
+    ++ cisKubeletFlags
     ++ cfg.extraFlags;
+
+  # ── Role sentinel list helpers (for ConditionPathExists OR-semantics) ──
+  # When the same condition is specified multiple times, systemd treats
+  # them as OR (any match => condition satisfied). We emit one line per
+  # candidate sentinel via a multiline string so the drop-in generator
+  # produces repeated `ConditionPathExists=` entries.
+  # Reference: systemd.unit(5) — conditions and assertions.
+  serverSentinelPaths =
+    optional (cfg.roleSentinels ? "server-init") cfg.roleSentinels."server-init"
+    ++ optional (cfg.roleSentinels ? "server-join") cfg.roleSentinels."server-join";
+
+  agentSentinelPaths =
+    optional (cfg.roleSentinels ? "agent") cfg.roleSentinels."agent"
+    ++ optional (cfg.roleSentinels ? "agent-gpu") cfg.roleSentinels."agent-gpu"
+    ++ optional (cfg.roleSentinels ? "agent-storage") cfg.roleSentinels."agent-storage"
+    ++ optional (cfg.roleSentinels ? "agent-ingress") cfg.roleSentinels."agent-ingress";
+
+  # systemd supports multiple same-name ConditionPathExists entries via
+  # repeated lines rendered as a string with newlines. The NixOS
+  # systemd generator accepts `list` values for repeated conditions.
+  mkRoleSentinelConditions = paths:
+    if paths == [] then {} else { ConditionPathExists = paths; };
 
   flags = if cfg.role == "server" then serverFlags else agentFlags;
 
@@ -309,12 +370,169 @@ in {
       });
       default = null;
       description = ''
-        Sentinel file paths for race-free server/agent role selection.
-        When set, each K3s service only starts if its sentinel file exists.
-        The init service creates exactly one sentinel before either service
-        starts, and systemd ConditionPathExists selects the correct one.
-        If neither sentinel exists (e.g. AMI build), neither service starts.
+        Legacy binary (server/agent) sentinel selection. For multi-role
+        AMIs (server-init / server-join / agent / agent-gpu / agent-storage
+        / agent-ingress) use `roleSentinels` instead.
       '';
+    };
+
+    roleSentinels = mkOption {
+      type = types.attrsOf types.str;
+      default = {};
+      description = ''
+        Multi-role sentinel paths — one per k3s NodeRole. kindling-init
+        writes exactly one at boot from userdata; systemd
+        ConditionPathExists (OR-semantics via repeated entries) selects
+        the matching service. If no sentinel exists (AMI build time),
+        no k3s service starts.
+
+        Canonical keys mirror arch-synthesizer k3s::NodeRole::slug():
+        "server-init", "server-join", "agent", "agent-gpu",
+        "agent-storage", "agent-ingress".
+
+        server-* sentinels activate k3s.service; agent-* sentinels
+        activate k3s-agent.service.
+      '';
+      example = literalExpression ''
+        {
+          "server-init"    = "/var/lib/kindling/role-server-init";
+          "server-join"    = "/var/lib/kindling/role-server-join";
+          "agent"          = "/var/lib/kindling/role-agent";
+          "agent-gpu"      = "/var/lib/kindling/role-agent-gpu";
+          "agent-storage"  = "/var/lib/kindling/role-agent-storage";
+          "agent-ingress"  = "/var/lib/kindling/role-agent-ingress";
+        }
+      '';
+    };
+
+    cisHardening = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Master toggle. When true, the submodule's knobs default to
+          their CIS-aligned values; user can still override any knob.
+        '';
+      };
+
+      readOnlyPortDisabled = mkOption {
+        type = types.bool;
+        default = cfg.cisHardening.enable;
+        description = "CIS 4.2.4 — set --kubelet-arg=read-only-port=0";
+      };
+
+      anonymousAuthDisabled = mkOption {
+        type = types.bool;
+        default = cfg.cisHardening.enable;
+        description = "CIS 4.2.1 — set --kubelet-arg=anonymous-auth=false";
+      };
+
+      authorizationModeWebhook = mkOption {
+        type = types.bool;
+        default = cfg.cisHardening.enable;
+        description = "CIS 4.2.2 — set --kubelet-arg=authorization-mode=Webhook";
+      };
+
+      protectKernelDefaults = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          CIS 4.2.6 — pass --protect-kernel-defaults=true. Set true at
+          CIS Level 2 and FedRAMP. Requires compatible kernel sysctl
+          defaults (enforced by base.mkSysctlConfig).
+        '';
+      };
+
+      makeIptablesUtilChains = mkOption {
+        type = types.bool;
+        default = cfg.cisHardening.enable;
+        description = "CIS 4.2.7 — ensure --kubelet-arg=make-iptables-util-chains=true";
+      };
+    };
+
+    auditPolicy = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Enable kube-apiserver audit logging. Server nodes only —
+          agents ignore these flags.
+        '';
+      };
+
+      policyPath = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = ''
+          Path to audit policy YAML on disk (baked into AMI). Passed
+          via --kube-apiserver-arg=audit-policy-file.
+        '';
+      };
+
+      logPath = mkOption {
+        type = types.str;
+        default = "/var/log/k3s-audit.log";
+        description = "kube-apiserver audit log output path";
+      };
+
+      logMaxAgeDays = mkOption {
+        type = types.ints.unsigned;
+        default = 30;
+        description = ''
+          Maximum retention in days. Compliance floors:
+          CIS L2 = 30, FedRAMP Moderate = 90, FedRAMP High = 365.
+        '';
+      };
+
+      logMaxBackups = mkOption {
+        type = types.ints.unsigned;
+        default = 10;
+        description = "Max rotated audit log files to keep";
+      };
+
+      logMaxSizeMb = mkOption {
+        type = types.ints.unsigned;
+        default = 256;
+        description = "Max audit log size in MB before rotation";
+      };
+    };
+
+    seccompProfile = {
+      kind = mkOption {
+        type = types.enum [ "unconfined" "runtime_default" "localhost" ];
+        default = "unconfined";
+        description = ''
+          Default seccomp profile for pods on this node. runtime_default
+          uses the container runtime's built-in restrictive profile
+          (required at CIS Level 2+). localhost points at `path`.
+        '';
+      };
+
+      path = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = ''
+          Path to seccomp JSON profile (required when kind="localhost").
+          Baked into the AMI.
+        '';
+      };
+    };
+
+    # Internal-only — exposes the computed flag lists so unit tests can
+    # introspect hardening decisions without forcing package evaluation.
+    # Not part of the public API.
+    _computed = mkOption {
+      type = types.attrs;
+      internal = true;
+      readOnly = true;
+      default = {
+        cisKubeletFlags = cisKubeletFlags;
+        auditApiserverFlags = auditApiserverFlags;
+        hardeningFlags = hardeningFlags;
+        serverSentinelPaths = serverSentinelPaths;
+        agentSentinelPaths = agentSentinelPaths;
+      };
+      description = "Read-only computed flag lists for test introspection";
     };
 
     nvidia = {
@@ -361,23 +579,78 @@ in {
           assertion = cfg.role != "agent" || (cfg.tokenFile != null || cfg.token != "");
           message = "services.blackmatter.k3s: agent role requires token or tokenFile";
         }
+        {
+          # Exactly one sentinel surface — combining legacy + multi-role
+          # would produce an AND of conditions (both must match), which
+          # is NEVER what the caller wants.
+          assertion = cfg.roleConditionPath == null || cfg.roleSentinels == {};
+          message = ''
+            services.blackmatter.k3s: cannot set both roleConditionPath
+            (legacy binary) and roleSentinels (multi-role). Choose one.
+          '';
+        }
+        {
+          # Every roleSentinels key must be a known NodeRole slug.
+          assertion = all (k: elem k [
+            "server-init" "server-join"
+            "agent" "agent-gpu" "agent-storage" "agent-ingress"
+          ]) (attrNames cfg.roleSentinels);
+          message = ''
+            services.blackmatter.k3s.roleSentinels: unknown role key.
+            Valid: server-init, server-join, agent, agent-gpu,
+            agent-storage, agent-ingress.
+          '';
+        }
+        {
+          # Audit policy enabled ⇒ policyPath or apiserver will reject.
+          assertion = !cfg.auditPolicy.enable || cfg.auditPolicy.policyPath != null;
+          message = ''
+            services.blackmatter.k3s.auditPolicy.enable = true requires
+            auditPolicy.policyPath to be set (kube-apiserver refuses
+            audit-log-path without a policy file).
+          '';
+        }
+        {
+          # Seccomp localhost profile ⇒ path must be set.
+          assertion = cfg.seccompProfile.kind != "localhost" || cfg.seccompProfile.path != null;
+          message = ''
+            services.blackmatter.k3s.seccompProfile.kind = "localhost"
+            requires seccompProfile.path to be set.
+          '';
+        }
+        {
+          # If agent-* sentinels are declared, agent.enable must be true.
+          assertion = agentSentinelPaths == [] || cfg.agent.enable;
+          message = ''
+            services.blackmatter.k3s.roleSentinels includes agent-*
+            entries but agent.enable is false. Set agent.enable = true
+            to activate k3s-agent.service.
+          '';
+        }
       ];
 
       # ── Systemd service ──────────────────────────────────────────────
       systemd.services.k3s = {
         description = "k3s - Lightweight Kubernetes";
         after = [ "network-online.target" ]
-          ++ optional (cfg.roleConditionPath != null) "kindling-init.service";
+          ++ optional (cfg.roleConditionPath != null || cfg.roleSentinels != {}) "kindling-init.service";
         wants = [ "network-online.target" ];
         wantedBy = [ "multi-user.target" ];
 
-        # When roleConditionPath is set, only start if the server sentinel exists.
-        # After=kindling-init.service ensures the sentinel is written before the
-        # condition is evaluated. Requires= is NOT used so non-kindling systems
-        # still work (kindling-init just won't exist → ordering is a no-op).
-        unitConfig = optionalAttrs (cfg.roleConditionPath != null) {
-          ConditionPathExists = cfg.roleConditionPath.server;
-        };
+        # Role sentinel precedence:
+        # 1. roleSentinels (multi-role): any server-* sentinel starts
+        #    the service (OR via repeated ConditionPathExists lines).
+        # 2. roleConditionPath (legacy binary): single server sentinel.
+        # 3. Neither set → service starts unconditionally.
+        # After=kindling-init.service ensures sentinels are written
+        # before conditions are evaluated. Requires= is NOT used so
+        # non-kindling systems (no kindling-init.service) still work.
+        unitConfig =
+          if serverSentinelPaths != []
+          then mkRoleSentinelConditions serverSentinelPaths
+          else optionalAttrs (cfg.roleConditionPath != null) {
+            ConditionPathExists = cfg.roleConditionPath.server;
+          };
 
         path = [ cfg.package ];
 
@@ -410,14 +683,20 @@ in {
         wants = [ "network-online.target" ];
         conflicts = [ "k3s.service" ];
 
-        # When roleConditionPath is set, both services are in wantedBy and
-        # ConditionPathExists selects exactly one at boot — no runtime
-        # systemctl commands needed. If neither sentinel exists (AMI build),
-        # neither service starts.
-        wantedBy = optional (cfg.roleConditionPath != null) "multi-user.target";
-        unitConfig = optionalAttrs (cfg.roleConditionPath != null) {
-          ConditionPathExists = cfg.roleConditionPath.agent;
-        };
+        # Same sentinel-precedence logic as k3s.service. Multi-role uses
+        # the agent-* subset of roleSentinels; legacy uses
+        # roleConditionPath.agent. In either case, both services are in
+        # wantedBy so systemd attempts both and ConditionPathExists
+        # selects the one whose sentinel kindling-init wrote.
+        wantedBy = optional
+          (cfg.roleConditionPath != null || cfg.roleSentinels != {})
+          "multi-user.target";
+        unitConfig =
+          if agentSentinelPaths != []
+          then mkRoleSentinelConditions agentSentinelPaths
+          else optionalAttrs (cfg.roleConditionPath != null) {
+            ConditionPathExists = cfg.roleConditionPath.agent;
+          };
 
         path = [ cfg.package ];
 
