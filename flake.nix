@@ -190,6 +190,18 @@
     nixosModules.kubectl = import ./module/nixos/kubectl;
     nixosModules.fluxcd = import ./module/nixos/fluxcd { inherit nixosHelpers; };
     nixosModules.kubernetes = import ./module/nixos/kubernetes { inherit nixosHelpers mkGoMonorepoSource mkGoMonorepoBinary; };
+    # services.blackmatter.k3s-ami — typed K3s AMI production surface.
+    # Single source of truth for "produce a K3s AMI"; subsumes the
+    # matrix of (variant × architecture × platform) previously
+    # hand-wired across kindling-profiles + platform-packer.
+    nixosModules.k3s-ami = import ./module/nixos/k3s-ami { inherit nixosHelpers; };
+
+    # Helper library — pure functions that derive AMI metadata + a
+    # complete nixosSystem from a typed declaration. Consumers
+    # (bake apps, pleme.yaml drivers) import this to avoid duplicating
+    # the (variant, arch, platform) → (system, AMI name, SSM key,
+    # instance-type) derivation.
+    lib.k3s-ami = import ./lib/k3s-ami.nix { inherit (nixpkgs) lib; };
 
     # ── Overlay ─────────────────────────────────────────────────────
     overlays.default = nixpkgs.lib.composeManyExtensions [
@@ -322,6 +334,10 @@
       };
       hm-module = import ./tests/unit/hm-module.nix {
         lib = nixpkgs.lib;
+      };
+      k3s-ami = import ./tests/unit/k3s-ami.nix {
+        lib = nixpkgs.lib;
+        inherit testHelpers;
       };
     });
 
