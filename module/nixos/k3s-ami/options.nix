@@ -154,9 +154,29 @@ let
                 bootstrap reads + writes /var/lib/k3s-fluxcd/github-token.
               '';
             };
+            ageKeySopsPath = mkOption {
+              type = nullOr str;
+              default = null;
+              description = ''
+                SOPS path resolving to an `AGE-SECRET-KEY-...` private
+                age key used by FluxCD source-controller to decrypt
+                SOPS-encrypted Secrets in the GitOps repo. When set,
+                Pangea pushes the key to SSM SecureString at
+                `<prefix>/fluxcd/age-key`; bootstrap reads it at first
+                boot and writes a `sops-age` Secret manifest into K3s's
+                auto-apply dir under flux-system namespace. The
+                fluxcd-system root Kustomization must additionally
+                carry `spec.decryption.{provider:sops,
+                secretRef.name:sops-age}` (added in the consuming
+                k8s repo, not by this module).
+
+                AMI stays generic: the key is NEVER baked into the
+                image; it flows from SSM at first-boot only.
+              '';
+            };
           };
         };
-        default = { enable = false; source = null; sopsPath = null; };
+        default = { enable = false; source = null; sopsPath = null; ageKeySopsPath = null; };
         description = "FluxCD bootstrap configuration.";
       };
 

@@ -346,6 +346,35 @@
       (log-info "k3s-bootstrap: fluxcd setup complete (sentinel written)")))
 (publish-phase "fluxcd")
 
+;; ── Phase: fluxcd-age-key — SOPS decryption keypair for FluxCD ─────
+;;
+;; If `<prefix>/fluxcd/age-key` is set (Pangea materialized it from
+;; the typed `bootstrap.fluxcd.ageKeySopsPath` slot), write a
+;; `sops-age` Secret in `flux-system` namespace into K3s's auto-apply
+;; dir. FluxCD source-controller reads `data.age.agekey` from this
+;; Secret to decrypt SOPS-encrypted Secrets in the GitOps repo when
+;; the consuming Kustomization carries
+;; `spec.decryption.{provider:sops, secretRef.name:sops-age}`.
+;;
+;; AMI stays generic — the age key is NEVER baked; this phase only
+;; reads SSM at first boot and writes the manifest at runtime.
+(define fluxcd-age-key (ssm-get-optional "fluxcd/age-key" ""))
+(if (eq? fluxcd-age-key "")
+    (log-info "k3s-bootstrap: no fluxcd/age-key in SSM — skipping SOPS decryption setup")
+    (begin
+      (log-info "k3s-bootstrap: fluxcd/age-key in SSM — writing sops-age Secret")
+      (define age-key-b64 (base64-encode (string-append fluxcd-age-key "\n")))
+      (define manifest
+        (string-format
+          "---\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: flux-system\n---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: sops-age\n  namespace: flux-system\ntype: Opaque\ndata:\n  age.agekey: {}\n"
+          age-key-b64))
+      (define manifest-path
+        (string-append manifests-dir "/sops-age-secret.yaml"))
+      (write-file manifest-path manifest)
+      (exec-capture "chmod" "600" manifest-path)
+      (log-info (string-format "k3s-bootstrap: wrote {}" manifest-path))))
+(publish-phase "fluxcd-age-key")
+
 ;; ── Phase: imagepullsecrets — bootstrap dockerconfigjson Secrets ────
 ;;
 ;; Pangea pushes one entry per pull-secret under
