@@ -326,9 +326,15 @@
       ;; conditionPath wasn't set. Lives in K3s's auto-deploy manifests
       ;; dir; gets applied on cluster up alongside gotk-components.yaml
       ;; (which IS baked, regardless of conditionPath).
+      ;;
+      ;; The root Kustomization carries `spec.decryption.{provider:sops,
+      ;; secretRef.name:sops-age}` so any SOPS-encrypted Secret anywhere
+      ;; under the reconciled path is decrypted at apply time. The
+      ;; `sops-age` Secret itself is materialized by the
+      ;; fluxcd-age-key phase below from SSM SecureString.
       (define gotk-sync-yaml
         (string-format
-          "---\napiVersion: source.toolkit.fluxcd.io/v1\nkind: GitRepository\nmetadata:\n  name: flux-system\n  namespace: flux-system\nspec:\n  interval: 1m0s\n  ref:\n    branch: {}\n  secretRef:\n    name: flux-system\n  url: {}\n---\napiVersion: kustomize.toolkit.fluxcd.io/v1\nkind: Kustomization\nmetadata:\n  name: flux-system\n  namespace: flux-system\nspec:\n  interval: 2m0s\n  path: {}\n  prune: true\n  sourceRef:\n    kind: GitRepository\n    name: flux-system\n"
+          "---\napiVersion: source.toolkit.fluxcd.io/v1\nkind: GitRepository\nmetadata:\n  name: flux-system\n  namespace: flux-system\nspec:\n  interval: 1m0s\n  ref:\n    branch: {}\n  secretRef:\n    name: flux-system\n  url: {}\n---\napiVersion: kustomize.toolkit.fluxcd.io/v1\nkind: Kustomization\nmetadata:\n  name: flux-system\n  namespace: flux-system\nspec:\n  interval: 2m0s\n  path: {}\n  prune: true\n  sourceRef:\n    kind: GitRepository\n    name: flux-system\n  decryption:\n    provider: sops\n    secretRef:\n      name: sops-age\n"
           fluxcd-branch fluxcd-url fluxcd-path))
       (write-file (string-append manifests-dir "/gotk-sync.yaml") gotk-sync-yaml)
       (log-info (string-format "k3s-bootstrap: wrote gotk-sync.yaml (url={} branch={} path={})"
