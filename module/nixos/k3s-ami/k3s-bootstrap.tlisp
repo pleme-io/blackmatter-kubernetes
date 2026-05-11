@@ -50,14 +50,23 @@
 ;; SSM keys WRITTEN (best-effort phase markers — operator pollable):
 ;;
 ;;   first-boot/phase            ← String. Values, in order:
-;;     "ssm-prefix"   IMDS + tag discovery done; instance is a real cluster member
-;;     "dns-upsert"   Route53 A record points at this instance — DNS
-;;                    propagation begins NOW, parallel with rest of boot
-;;     "tls-ca"       all 6 CA files materialized
-;;     "config"       /etc/rancher/k3s/config.yaml written
-;;     "cilium"       Cilium HelmChart manifest written (skipped on flannel)
-;;     "fluxcd"       gotk-sync.yaml + token + sentinel written (skipped if disabled)
-;;     "ready"        sentinel written; k3s.service may now start
+;;     "ssm-prefix"      IMDS + tag discovery done; instance is a real cluster member
+;;     "dns-upsert"      Route53 A record points at this instance — DNS
+;;                       propagation begins NOW, parallel with rest of boot
+;;     "persistent-state" EBS volume attached + mounted at mount-path
+;;                       (skipped when persistent-state SSM keys absent)
+;;     "tls-ca"          all 6 CA files materialized
+;;     "config"          /etc/rancher/k3s/config.yaml written
+;;     "cilium"          Cilium HelmChart manifest written (skipped on flannel)
+;;     "fluxcd"          gotk-sync.yaml + token + sentinel written (skipped if disabled)
+;;     "ready"           sentinel written; k3s.service may now start
+;;
+;; Optional SSM keys READ (persistent-state phase — only when set):
+;;
+;;   persistent-state/mount-path         ← e.g. /var/lib/rancher/k3s
+;;   persistent-state/discovery-tag      ← tag key, default PersistentStateFor
+;;   persistent-state/discovery-value    ← tag value, e.g. pleme-k3s-dev
+;;   persistent-state/filesystem         ← ext4 | xfs
 
 (define sentinel "/var/lib/k3s-bootstrap-complete")
 (define imds-base "http://169.254.169.254/latest")
@@ -207,6 +216,170 @@
   (exit 1))
 (log-info (string-format "k3s-bootstrap: upserted {} → {}" api-hostname public-ip))
 (publish-phase "dns-upsert")
+
+;; ── Persistent state EBS volume (optional) ─────────────────────────
+;; When SSM has /pangea/<plat>/k3s/<cluster>/persistent-state/* keys
+;; (emitted by platform-k3s when platform.k3s.persistent_state is set
+;; in pleme.yaml), discover the tagged EBS volume, attach it to this
+;; instance, mkfs on first boot, and mount at mount_path BEFORE the
+;; tls-ca phase materialises /var/lib/rancher/k3s/server/tls/. That
+;; way every byte k3s writes (CAs, etcd state, server registrations)
+;; lands on persistent storage.
+;;
+;; Idempotent across reboots:
+;;   - already-attached on this instance → skip attach
+;;   - already-formatted volume          → skip mkfs (preserves state)
+;;   - already-mounted path              → skip mount
+;;   - already-in-fstab UUID             → skip fstab write
+;;
+;; Bail-on-conflict: if the volume is in-use on a different instance,
+;; refuse to auto-detach. Operator must intervene to avoid silent
+;; data moves.
+;;
+;; SSM keys read:
+;;   persistent-state/mount-path        → e.g. /var/lib/rancher/k3s
+;;   persistent-state/discovery-tag     → tag key, e.g. PersistentStateFor
+;;   persistent-state/discovery-value   → tag value, e.g. pleme-k3s-dev
+;;   persistent-state/filesystem        → ext4 | xfs
+
+(define ps-mount-path (ssm-get-optional "persistent-state/mount-path" ""))
+(when (not (= 0 (string-length ps-mount-path)))
+  (define ps-discovery-tag   (ssm-get-optional "persistent-state/discovery-tag" "PersistentStateFor"))
+  (define ps-discovery-value (ssm-get-optional "persistent-state/discovery-value" ""))
+  (define ps-filesystem      (ssm-get-optional "persistent-state/filesystem" "ext4"))
+
+  (log-info (string-format "k3s-bootstrap: persistent-state — discovering {}={}"
+                            ps-discovery-tag ps-discovery-value))
+
+  ;; 1. Discover volume by tag.
+  (define vol-id-r
+    (exec-capture "aws" "ec2" "describe-volumes"
+                  "--region" region
+                  "--filters" (string-format "Name=tag:{},Values={}" ps-discovery-tag ps-discovery-value)
+                  "--query" "Volumes[0].VolumeId"
+                  "--output" "text"))
+  (when (not (= 0 (alist-get vol-id-r :status)))
+    (log-error (string-format "k3s-bootstrap: describe-volumes failed: {}"
+                              (alist-get vol-id-r :stderr)))
+    (exit 1))
+  (define volume-id (string-trim (alist-get vol-id-r :stdout)))
+  (when (or (= 0 (string-length volume-id)) (eq? volume-id "None"))
+    (log-error (string-format "k3s-bootstrap: no volume with tag {}={}"
+                              ps-discovery-tag ps-discovery-value))
+    (exit 1))
+  (log-info (string-format "k3s-bootstrap: persistent-state volume={}" volume-id))
+
+  ;; 2. Inspect current attachment.
+  (define vol-state
+    (string-trim (alist-get
+      (exec-capture "aws" "ec2" "describe-volumes"
+                    "--region" region "--volume-ids" volume-id
+                    "--query" "Volumes[0].State" "--output" "text")
+      :stdout)))
+  (define vol-attached
+    (string-trim (alist-get
+      (exec-capture "aws" "ec2" "describe-volumes"
+                    "--region" region "--volume-ids" volume-id
+                    "--query" "Volumes[0].Attachments[0].InstanceId" "--output" "text")
+      :stdout)))
+
+  ;; 3. Attach if needed — refusing to auto-detach.
+  (cond
+    ((eq? vol-state "available")
+     (log-info "k3s-bootstrap: attaching")
+     (define attach-r
+       (exec-capture "aws" "ec2" "attach-volume"
+                     "--region" region
+                     "--volume-id" volume-id
+                     "--instance-id" instance-id
+                     "--device" "/dev/xvdf"))
+     (when (not (= 0 (alist-get attach-r :status)))
+       (log-error (string-format "k3s-bootstrap: attach-volume failed: {}"
+                                 (alist-get attach-r :stderr)))
+       (exit 1)))
+    ((and (eq? vol-state "in-use") (eq? vol-attached instance-id))
+     (log-info "k3s-bootstrap: volume already attached to this instance"))
+    ((eq? vol-state "in-use")
+     (log-error (string-format "k3s-bootstrap: volume in-use on {} not {} — refusing to detach"
+                               vol-attached instance-id))
+     (exit 1))
+    (else
+     (log-error (string-format "k3s-bootstrap: unexpected volume state {}" vol-state))
+     (exit 1)))
+
+  ;; 4. Poll until "attached". ~2 minute deadline.
+  (define (poll-attached n)
+    (if (= n 0)
+        (begin (log-error "k3s-bootstrap: timed out waiting for volume attached")
+               (exit 1))
+        (begin
+          (define s
+            (string-trim (alist-get
+              (exec-capture "aws" "ec2" "describe-volumes"
+                            "--region" region "--volume-ids" volume-id
+                            "--query" "Volumes[0].Attachments[0].State" "--output" "text")
+              :stdout)))
+          (if (eq? s "attached")
+              (log-info "k3s-bootstrap: volume attached")
+              (begin (sleep 3) (poll-attached (- n 1)))))))
+  (poll-attached 40)
+
+  ;; 5. Resolve block-device path. AWS Nitro NVMe stable alias:
+  ;;    /dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_<volid-no-dash>
+  (define device
+    (string-append "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_"
+                   (string-replace volume-id "-" "")))
+  (define (poll-device n)
+    (if (= n 0)
+        (begin (log-error (string-format "k3s-bootstrap: device {} never appeared" device))
+               (exit 1))
+        (if (is-file? device)
+            (log-info (string-format "k3s-bootstrap: device {}" device))
+            (begin (sleep 1) (poll-device (- n 1))))))
+  (poll-device 60)
+
+  ;; 6. blkid — format if blank.
+  (define blkid-r (exec-capture "blkid" device))
+  (if (= 0 (alist-get blkid-r :status))
+      (log-info "k3s-bootstrap: volume already formatted — skipping mkfs")
+      (begin
+        (log-info (string-format "k3s-bootstrap: formatting blank volume ({})" ps-filesystem))
+        (define mkfs-r (exec-capture (string-append "mkfs." ps-filesystem) device))
+        (when (not (= 0 (alist-get mkfs-r :status)))
+          (log-error (string-format "k3s-bootstrap: mkfs failed: {}"
+                                    (alist-get mkfs-r :stderr)))
+          (exit 1))))
+
+  ;; 7. mkdir + mount (idempotent).
+  (mkdir-p ps-mount-path)
+  (define mounts (read-file "/proc/mounts"))
+  (if (string-contains? mounts (string-format " {} " ps-mount-path))
+      (log-info "k3s-bootstrap: mount path already mounted")
+      (begin
+        (define mount-r (exec-capture "mount" device ps-mount-path))
+        (when (not (= 0 (alist-get mount-r :status)))
+          (log-error (string-format "k3s-bootstrap: mount failed: {}"
+                                    (alist-get mount-r :stderr)))
+          (exit 1))
+        (log-info (string-format "k3s-bootstrap: mounted {} → {}" device ps-mount-path))))
+
+  ;; 8. Write /etc/fstab UUID entry so in-place reboots remount via
+  ;;    systemd-fstab-generator without re-running this script.
+  (define uuid
+    (string-trim (alist-get
+      (exec-capture "blkid" "-o" "value" "-s" "UUID" device)
+      :stdout)))
+  (when (and (not (= 0 (string-length uuid)))
+             (not (eq? uuid "None")))
+    (define fstab-body (read-file "/etc/fstab"))
+    (when (not (string-contains? fstab-body uuid))
+      (define fstab-line
+        (string-format "UUID={} {} {} defaults,nofail 0 2"
+                       uuid ps-mount-path ps-filesystem))
+      (write-file "/etc/fstab" (string-append fstab-body "\n" fstab-line "\n"))
+      (log-info (string-format "k3s-bootstrap: /etc/fstab UUID={} appended" uuid))))
+
+  (publish-phase "persistent-state"))
 
 ;; ── 1) CAs to /var/lib/rancher/k3s/server/tls/ ──────────────────────
 ;; All values are base64-PEM. Decode + write with 0600 perms.
