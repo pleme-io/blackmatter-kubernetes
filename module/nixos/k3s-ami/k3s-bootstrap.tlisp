@@ -516,6 +516,12 @@
         (string-format
           "---\napiVersion: source.toolkit.fluxcd.io/v1\nkind: GitRepository\nmetadata:\n  name: flux-system\n  namespace: flux-system\nspec:\n  interval: 1m0s\n  ref:\n    branch: {}\n  secretRef:\n    name: flux-system\n  url: {}\n---\napiVersion: kustomize.toolkit.fluxcd.io/v1\nkind: Kustomization\nmetadata:\n  name: flux-system\n  namespace: flux-system\nspec:\n  interval: 2m0s\n  path: {}\n  prune: true\n  sourceRef:\n    kind: GitRepository\n    name: flux-system\n  decryption:\n    provider: sops\n    secretRef:\n      name: sops-age\n"
           fluxcd-branch fluxcd-url fluxcd-path))
+      ;; manifests/ may not exist on first boot when persistent-state
+      ;; is mounted on /var/lib/rancher/k3s — the AMI activation
+      ;; pre-creates it on the underlying root volume, but the EBS
+      ;; mount hides that. mkdir-p is idempotent so this is also
+      ;; safe on the non-persistent-state path.
+      (mkdir-p manifests-dir)
       (write-file (string-append manifests-dir "/gotk-sync.yaml") gotk-sync-yaml)
       (log-info (string-format "k3s-bootstrap: wrote gotk-sync.yaml (url={} branch={} path={})"
                                 fluxcd-url fluxcd-branch fluxcd-path))
