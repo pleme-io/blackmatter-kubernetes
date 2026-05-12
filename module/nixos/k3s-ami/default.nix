@@ -157,6 +157,11 @@ in
         util-linux
         e2fsprogs
         xfsprogs
+        # systemd-tmpfiles to re-apply baked-manifest rules after the
+        # EBS mount overlays /var/lib/rancher/k3s. Without this,
+        # gotk-components.yaml + cilium.yaml + other tmpfiles-managed
+        # manifests are hidden by the mount.
+        systemd
       ];
       unitConfig = {
         # Idempotency: skip if already complete.
