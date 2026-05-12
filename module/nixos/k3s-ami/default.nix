@@ -150,6 +150,13 @@ in
         curl
         coreutils
         bash
+        # Persistent-state phase: blkid (util-linux), mkfs.ext4
+        # (e2fsprogs), mkfs.xfs (xfsprogs), mount (util-linux),
+        # test (coreutils — already present). util-linux also
+        # provides `mount` + `findmnt`.
+        util-linux
+        e2fsprogs
+        xfsprogs
       ];
       unitConfig = {
         # Idempotency: skip if already complete.
