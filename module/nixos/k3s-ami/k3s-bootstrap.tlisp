@@ -329,11 +329,17 @@
   (define device
     (string-append "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_"
                    (string-replace volume-id "-" "")))
+  ;; `is-file?` returns false on symlinks + block devices; the
+  ;; AWS-NVMe alias under /dev/disk/by-id is a symlink to a block
+  ;; device, so we shell out to `test -e` which follows symlinks +
+  ;; treats any existing path as truthy.
+  (define (path-exists? p)
+    (= 0 (alist-get (exec-capture "test" "-e" p) :status)))
   (define (poll-device n)
     (if (= n 0)
         (begin (log-error (string-format "k3s-bootstrap: device {} never appeared" device))
                (exit 1))
-        (if (is-file? device)
+        (if (path-exists? device)
             (log-info (string-format "k3s-bootstrap: device {}" device))
             (begin (sleep 1) (poll-device (- n 1))))))
   (poll-device 60)
