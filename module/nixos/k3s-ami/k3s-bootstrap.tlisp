@@ -387,49 +387,34 @@
       (log-info (string-format "k3s-bootstrap: systemd-tmpfiles --create returned {}; some rules may have warnings (non-fatal)"
                                 (alist-get tmpfiles-r :status))))
 
-  ;; Reconcile etcd member identity with the stable node-name.
+  ;; Reset etcd member registry on every boot.
   ;;
-  ;; Persistent state preserves
-  ;; /var/lib/rancher/k3s/server/db/etcd/ across instance recreations.
-  ;; etcd records member identity in that dir using whatever
-  ;; --node-name was when the cluster initialised. When that name
-  ;; doesn't match the current node-name (e.g. previous boot used
-  ;; the OS hostname, now we use the stable cluster-name), etcd
-  ;; refuses to start:
+  ;; etcd's member identity is `node-name + URL`. The URL hard-codes
+  ;; the instance's private IP, which changes every ASG cycle, even
+  ;; when node-name is stable. etcd refuses to start when the
+  ;; persisted URL doesn't match the current IP:
   ;;
   ;;   Failed to test etcd connection: this server is a not a member
-  ;;   of the etcd cluster.
+  ;;   of the etcd cluster. Found [...=https://10.30.1.245:2380],
+  ;;   expect: ...=https://10.30.1.211:2380
   ;;
-  ;; Detection: read /var/lib/rancher/k3s/server/db/etcd/name and
-  ;; compare to the expected stable node-name. If different (or
-  ;; the file is missing), wipe the etcd dir so k3s re-initialises
-  ;; under the stable name. This is a ONE-SHOT reset — once the
-  ;; stable-name etcd is created, future cycles find the right name
-  ;; and skip the reset.
+  ;; For a single-node control plane, the cluster identity is
+  ;; rebuilt from the kubeconfig CAs (which DO persist on the
+  ;; volume) and Flux re-applies all manifests from the Git source
+  ;; of truth. So wiping the etcd dir on every boot is safe — the
+  ;; ledger of *what* should run lives in Git, the runtime state of
+  ;; *what is running* is ephemeral.
   ;;
-  ;; Workload state lives under /var/lib/rancher/k3s/server/ in
-  ;; OTHER subdirs (manifests/, tls/, agent/, data/) which we
-  ;; preserve. Only the etcd member registry is wiped.
-  (define ps-cluster-name (ssm-get-optional "persistent-state/discovery-value" ""))
-  (when (not (= 0 (string-length ps-cluster-name)))
-    (define expected-node-name (string-append ps-cluster-name "-server"))
-    (define etcd-dir "/var/lib/rancher/k3s/server/db/etcd")
-    (define name-file (string-append etcd-dir "/name"))
-    (when (path-exists? name-file)
-      (define existing-name
-        (string-trim (alist-get (exec-capture "cat" name-file) :stdout)))
-      ;; etcd appends a 16-char hex suffix to the member name like
-      ;; "ip-10-30-1-57.ec2.internal-00f665d5". Match prefix only.
-      (define prefix-match?
-        (= 0 (alist-get
-               (exec-capture "sh" "-c"
-                 (string-format "echo '{}' | grep -q '^{}'"
-                                existing-name expected-node-name))
-               :status)))
-      (when (not prefix-match?)
-        (log-info (string-format "k3s-bootstrap: etcd member name '{}' does not match stable '{}-*' — wiping etcd dir for one-shot re-init"
-                                  existing-name expected-node-name))
-        (exec-capture "rm" "-rf" etcd-dir))))
+  ;; What persists on the volume: tls/, agent/, manifests/, data/,
+  ;; logs/. Only the etcd member registry is reset.
+  ;;
+  ;; Multi-node clusters with HA etcd would need a different
+  ;; strategy (member-update via etcdctl on IP change). Out of
+  ;; scope for the single-node persistent-state primitive.
+  (define etcd-dir "/var/lib/rancher/k3s/server/db/etcd")
+  (when (path-exists? etcd-dir)
+    (log-info "k3s-bootstrap: wiping /var/lib/rancher/k3s/server/db/etcd to reset member URL on new private IP")
+    (exec-capture "rm" "-rf" etcd-dir))
 
   ;; Skipped: /etc/fstab write.
   ;;
