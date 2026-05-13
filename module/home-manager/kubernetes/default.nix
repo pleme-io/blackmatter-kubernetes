@@ -18,10 +18,6 @@ with lib; let
     k9s = bm "k9s" pkgs.k9s;
     helm = bm "helm" pkgs.kubernetes-helm;
     kubectx = bm "kubectx" pkgs.kubectx;
-    # Required for `kubectl --context gke_*` against GKE clusters — modern gcloud
-    # ships kubeconfig entries that reference this exec-plugin; without it kubectl
-    # errors with "gke-gcloud-auth-plugin was not found or is not executable".
-    gke-gcloud-auth-plugin = bm "gke-gcloud-auth-plugin" pkgs.google-cloud-sdk.components.gke-gcloud-auth-plugin;
 
     # GitOps & deployment
     fluxcd = bm "fluxcd" pkgs.fluxcd;
@@ -116,10 +112,6 @@ with lib; let
   profileTools = {
     minimal = [
       "kubectl" "helm" "k9s" "kubectx"
-      # gke-gcloud-auth-plugin is required whenever kubectl is used against a GKE
-      # cluster; pleme-io's saas fleet (DBK, WMT, MEU, MUS, etc.) is GKE-based, so
-      # it belongs in every profile that includes kubectl.
-      "gke-gcloud-auth-plugin"
     ];
     standard = profileTools.minimal ++ [
       "fluxcd" "stern" "kubecolor" "kube-score" "kubectl-tree"
