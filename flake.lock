@@ -11,11 +11,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1779288755,
-        "narHash": "sha256-9ZuHczxAj40L8TFPL1VMQly7NO59oOMSlnAVwKueo/A=",
+        "lastModified": 1779292460,
+        "narHash": "sha256-w0LAMQ3vVTrFq9M+UK/grV67CF8MutVPkDE2m7wVIco=",
         "owner": "pleme-io",
         "repo": "blackmatter-go",
-        "rev": "ffd116c78abaa728bdd94b0929121125d9318496",
+        "rev": "4f7dc915fbc2174b9fa731360587a706126bb9b9",
         "type": "github"
       },
       "original": {
@@ -427,11 +427,11 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1779284442,
-        "narHash": "sha256-89/KDnJGxTn3Na7dQ5Hn8UOoEzm/Ykct6NZn+ZDRP7U=",
+        "lastModified": 1779291552,
+        "narHash": "sha256-T7s59XNMflXd7SSOlv4UUUyoDWoJrLwavMtjmlmmO0w=",
         "owner": "cachix",
         "repo": "devenv",
-        "rev": "bcd09e3fe07e143a4008f88b48789a373a19d09b",
+        "rev": "1568eead6164e2b51e6917dfae8a121cbb3efafc",
         "type": "github"
       },
       "original": {
