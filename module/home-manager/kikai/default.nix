@@ -68,9 +68,19 @@ in {
           enable = lib.mkEnableOption "this k3s VM cluster";
 
           vmMode = lib.mkOption {
-            type = lib.types.enum [ "k3s" "builder" ];
+            type = lib.types.enum [ "k3s" "engenho" "builder" ];
             default = "k3s";
-            description = "VM mode: 'k3s' for K3s clusters, 'builder' for Nix remote builders (SSH + nix-daemon health checks only).";
+            description = ''
+              Workload runtime inside the kasou VM.
+
+              * `k3s` — upstream k3s server. Today's stable bridge.
+              * `engenho` — pleme-io's typed, attested, Rust-native K8s
+                runtime (`pleme-io/theory/ENGENHO.md`). Currently routes
+                to `k3s` under the hood (engenho M0.0–M0.3); switches to
+                native engenho at M0.4 without changing this option.
+                1:1 kubectl wire-compat throughout the transition.
+              * `builder` — no k8s; aarch64-linux nix-builder VM.
+            '';
           };
 
           cpus = lib.mkOption {
