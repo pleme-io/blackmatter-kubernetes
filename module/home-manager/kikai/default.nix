@@ -25,6 +25,47 @@ let
   # Runtime tools that kikai shells out to
   runtimeDeps = cfg.kikaiRuntimeDeps;
 
+  # Emit a typed GitopsBackend tagged-union matching Rust serde.
+  # Layout:
+  #   { backend = "none" }
+  #   { backend = "fluxcd"; namespace = ...; source_url = ...; ... }
+  #   { backend = "argocd"; namespace = ...; application = ...; ... }
+  mkGitopsBackend = g:
+    if g.backend == "none" then { backend = "none"; }
+    else if g.backend == "fluxcd" then {
+      backend = "fluxcd";
+      namespace = g.fluxcd.namespace;
+      source_url = g.fluxcd.sourceUrl;
+      source_ref = g.fluxcd.sourceRef;
+      source_path = g.fluxcd.sourcePath;
+      kustomizations = g.fluxcd.kustomizations;
+      interval_secs = g.fluxcd.intervalSecs;
+      wait_timeout_secs = g.fluxcd.waitTimeoutSecs;
+      secret =
+        if g.fluxcd.secret == null then null
+        else { kind = g.fluxcd.secret.kind; reference = g.fluxcd.secret.reference; };
+      targets = map (t: { path = t.path; namespace = t.namespace; }) g.fluxcd.targets;
+    }
+    else if g.backend == "argocd" then {
+      backend = "argocd";
+      namespace = g.argocd.namespace;
+      application = g.argocd.application;
+      server_url = g.argocd.serverUrl;
+      source_url = g.argocd.sourceUrl;
+      target_revision = g.argocd.targetRevision;
+      source_path = g.argocd.sourcePath;
+      destination_namespace = g.argocd.destinationNamespace;
+      sync_policy =
+        if g.argocd.syncPolicy.mode == "manual" then { mode = "manual"; }
+        else { mode = "automatic"; prune = g.argocd.syncPolicy.prune; self_heal = g.argocd.syncPolicy.selfHeal; };
+      wait_timeout_secs = g.argocd.waitTimeoutSecs;
+      secret =
+        if g.argocd.secret == null then null
+        else { kind = g.argocd.secret.kind; reference = g.argocd.secret.reference; };
+      targets = map (t: { path = t.path; namespace = t.namespace; }) g.argocd.targets;
+    }
+    else throw "unknown gitops backend: ${g.backend}";
+
   # Generate clusters.yaml content (snake_case for Rust serde)
   clustersYaml = lib.mapAttrs (_name: c: {
     vm_mode = c.vmMode;
@@ -41,7 +82,7 @@ let
     health_interval_secs = c.timeouts.healthInterval;
     mac_address = c.macAddress;
     vm_ip = c.vmIp;
-    fluxcd_enable = c.fluxcd.enable;
+    gitops = mkGitopsBackend c.gitops;
   }) enabledClusters;
 in {
   options.blackmatter.components.kubernetes = {
@@ -205,18 +246,175 @@ in {
             };
           };
 
-          fluxcd = {
-            enable = lib.mkOption {
-              type = lib.types.bool;
-              default = true;
+          # ── GitOps backend (FluxCD | ArgoCD | none) ──────────
+          # Default: FluxCD pointed at github.com/pleme-io/k8s
+          # (placeholder). Operators override per-cluster via the
+          # fleet registry. Propagates to clusters.yaml as the
+          # tagged-union `gitops` field consumed by
+          # `kikai::gitops::GitopsBackend`.
+          gitops = {
+            backend = lib.mkOption {
+              type = lib.types.enum [ "none" "fluxcd" "argocd" ];
+              default = "fluxcd";
               description = ''
-                Whether this cluster runs FluxCD. When false, kikai's
-                daemon skips wait_for_flux during bring-up — saves
-                ~5 min of poll-then-timeout for operator-local
-                clusters that don't bootstrap FluxCD (e.g.
-                engenho-local). Propagates to clusters.yaml as
-                `fluxcd_enable`.
+                Which GitOps controller (if any) this cluster
+                reconciles through. `none` skips reconciliation
+                waits entirely (operator-local / no-GitOps
+                clusters). `fluxcd` is the homelab default.
+                `argocd` for cluster-of-clusters / GitOps with UI.
               '';
+            };
+
+            # FluxCD parameters (used when backend = "fluxcd")
+            fluxcd = {
+              namespace = lib.mkOption {
+                type = lib.types.str;
+                default = "flux-system";
+                description = "Namespace where flux-system controllers run.";
+              };
+              sourceUrl = lib.mkOption {
+                type = lib.types.str;
+                default = "https://github.com/pleme-io/k8s.git";
+                description = "Git source URL for the cluster's GitRepository.";
+              };
+              sourceRef = lib.mkOption {
+                type = lib.types.str;
+                default = "main";
+                description = "Git branch/tag/sha the source tracks.";
+              };
+              sourcePath = lib.mkOption {
+                type = lib.types.str;
+                default = "./";
+                description = "Path within the repo for Kustomization spec.path.";
+              };
+              kustomizations = lib.mkOption {
+                type = lib.types.listOf lib.types.str;
+                default = [];
+                description = "Specific kustomizations to wait for. Empty = wait for all.";
+              };
+              intervalSecs = lib.mkOption {
+                type = lib.types.ints.positive;
+                default = 60;
+                description = "Reconcile interval in seconds.";
+              };
+              waitTimeoutSecs = lib.mkOption {
+                type = lib.types.nullOr lib.types.ints.positive;
+                default = null;
+                description = "Override boot_timeout_secs for flux wait. null = use cluster default.";
+              };
+              secret = lib.mkOption {
+                type = lib.types.nullOr (lib.types.submodule {
+                  options = {
+                    kind = lib.mkOption {
+                      type = lib.types.enum [ "sops" "cofre" "kubernetes" ];
+                      description = "Where the auth material lives.";
+                    };
+                    reference = lib.mkOption {
+                      type = lib.types.str;
+                      description = "Backend-specific reference (file path / cofre SecretRef / namespace/name).";
+                    };
+                  };
+                });
+                default = null;
+                description = "Auth/secret reference for private repos. null = public.";
+              };
+              targets = lib.mkOption {
+                type = lib.types.listOf (lib.types.submodule {
+                  options = {
+                    path = lib.mkOption { type = lib.types.str; description = "Path in source repo."; };
+                    namespace = lib.mkOption { type = lib.types.str; default = ""; description = "Destination namespace (empty = controller default)."; };
+                  };
+                });
+                default = [];
+                description = "Multi-component reconcile targets.";
+              };
+            };
+
+            # ArgoCD parameters (used when backend = "argocd")
+            argocd = {
+              namespace = lib.mkOption {
+                type = lib.types.str;
+                default = "argocd";
+                description = "Namespace where argocd controllers run.";
+              };
+              application = lib.mkOption {
+                type = lib.types.str;
+                default = "cluster";
+                description = "Application name to wait for.";
+              };
+              serverUrl = lib.mkOption {
+                type = lib.types.nullOr lib.types.str;
+                default = null;
+                description = "Optional ArgoCD server URL (for argocd CLI).";
+              };
+              sourceUrl = lib.mkOption {
+                type = lib.types.str;
+                default = "https://github.com/pleme-io/k8s.git";
+                description = "Git source URL.";
+              };
+              targetRevision = lib.mkOption {
+                type = lib.types.str;
+                default = "main";
+                description = "Target git revision (branch/tag/sha).";
+              };
+              sourcePath = lib.mkOption {
+                type = lib.types.str;
+                default = "./";
+                description = "Path within the repo.";
+              };
+              destinationNamespace = lib.mkOption {
+                type = lib.types.str;
+                default = "default";
+                description = "Destination namespace for deployed resources.";
+              };
+              syncPolicy = lib.mkOption {
+                type = lib.types.submodule {
+                  options = {
+                    mode = lib.mkOption {
+                      type = lib.types.enum [ "manual" "automatic" ];
+                      default = "automatic";
+                      description = "Manual: operator-triggered sync. Automatic: continuous reconcile.";
+                    };
+                    prune = lib.mkOption {
+                      type = lib.types.bool;
+                      default = false;
+                      description = "Remove resources that disappear from git (automatic mode).";
+                    };
+                    selfHeal = lib.mkOption {
+                      type = lib.types.bool;
+                      default = false;
+                      description = "Revert manual cluster edits (automatic mode).";
+                    };
+                  };
+                };
+                default = { mode = "automatic"; prune = false; selfHeal = false; };
+                description = "Sync policy — manual or automatic with optional prune/self-heal.";
+              };
+              waitTimeoutSecs = lib.mkOption {
+                type = lib.types.nullOr lib.types.ints.positive;
+                default = null;
+                description = "Override boot_timeout_secs for argocd wait.";
+              };
+              secret = lib.mkOption {
+                type = lib.types.nullOr (lib.types.submodule {
+                  options = {
+                    kind = lib.mkOption { type = lib.types.enum [ "sops" "cofre" "kubernetes" ]; };
+                    reference = lib.mkOption { type = lib.types.str; };
+                  };
+                });
+                default = null;
+                description = "Auth/secret reference for private repos.";
+              };
+              targets = lib.mkOption {
+                type = lib.types.listOf (lib.types.submodule {
+                  options = {
+                    path = lib.mkOption { type = lib.types.str; };
+                    namespace = lib.mkOption { type = lib.types.str; default = ""; };
+                  };
+                });
+                default = [];
+                description = "Multi-component reconcile targets.";
+              };
             };
           };
         };
