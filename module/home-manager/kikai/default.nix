@@ -41,6 +41,7 @@ let
       kustomizations = g.fluxcd.kustomizations;
       interval_secs = g.fluxcd.intervalSecs;
       wait_timeout_secs = g.fluxcd.waitTimeoutSecs;
+      target_namespace = g.fluxcd.targetNamespace;
       secret =
         if g.fluxcd.secret == null then null
         else { kind = g.fluxcd.secret.kind; reference = g.fluxcd.secret.reference; };
@@ -301,6 +302,17 @@ in {
                 type = lib.types.nullOr lib.types.ints.positive;
                 default = null;
                 description = "Override boot_timeout_secs for flux wait. null = use cluster default.";
+              };
+              targetNamespace = lib.mkOption {
+                type = lib.types.str;
+                default = "default";
+                description = ''
+                  Kustomization spec.targetNamespace. Required for
+                  upstream repos with namespace-less manifests
+                  (podinfo's ./kustomize is the canonical example).
+                  Empty string omits the field; "default" matches
+                  kubectl's long-standing convention.
+                '';
               };
               secret = lib.mkOption {
                 type = lib.types.nullOr (lib.types.submodule {
