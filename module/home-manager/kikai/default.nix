@@ -233,6 +233,13 @@ in {
           ];
           RunAtLoad = true;
           KeepAlive = true;
+          # launchctl bootout default exit-timeout is ~5s; not enough
+          # for the daemon's snapshot-save drain on SIGTERM, which has
+          # to locate the root disk via `nix build` (~10s cache hit) +
+          # pause VM + save_state (~5-30s depending on RAM size) +
+          # write meta.json. 90s gives ample headroom while still
+          # capping a wedged daemon's hold on launchd.
+          ExitTimeOut = 90;
           StandardOutPath = "${homeDir}/Library/Logs/kikai-${name}.log";
           StandardErrorPath = "${homeDir}/Library/Logs/kikai-${name}.err";
           WorkingDirectory = clusterCfg.nixFlake;
