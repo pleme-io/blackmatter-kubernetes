@@ -1511,11 +1511,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1779339587,
-        "narHash": "sha256-k2t1gt761YK/5ze7ZVtiVWL72MZteqDYu6r23iXcFNY=",
+        "lastModified": 1779343488,
+        "narHash": "sha256-BlQAbJ+pSow+Qo/1LXoO5O3O2W/XTgvD1zdQENuumOE=",
         "owner": "pleme-io",
         "repo": "kikai",
-        "rev": "cd4e977dfe71e10cf740f34428e77684b0caec08",
+        "rev": "1f14d055649a00c995565e9466d15d742e05d298",
         "type": "github"
       },
       "original": {
