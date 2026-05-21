@@ -41,6 +41,7 @@ let
     health_interval_secs = c.timeouts.healthInterval;
     mac_address = c.macAddress;
     vm_ip = c.vmIp;
+    fluxcd_enable = c.fluxcd.enable;
   }) enabledClusters;
 in {
   options.blackmatter.components.kubernetes = {
@@ -201,6 +202,21 @@ in {
               type = lib.types.ints.positive;
               default = 2;
               description = "Seconds between health check polls during startup.";
+            };
+          };
+
+          fluxcd = {
+            enable = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = ''
+                Whether this cluster runs FluxCD. When false, kikai's
+                daemon skips wait_for_flux during bring-up — saves
+                ~5 min of poll-then-timeout for operator-local
+                clusters that don't bootstrap FluxCD (e.g.
+                engenho-local). Propagates to clusters.yaml as
+                `fluxcd_enable`.
+              '';
             };
           };
         };
