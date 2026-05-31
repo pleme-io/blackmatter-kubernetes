@@ -75827,11 +75827,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1780206797,
-        "narHash": "sha256-+np0aORnLEeHkbEmRrrtYKeN4mFG0dGyGBPYIWfqLHI=",
+        "lastModified": 1780213961,
+        "narHash": "sha256-GPQt5GO118ZwjY2kWaW++bJmfc5SpbfY1AH9O049GjI=",
         "owner": "pleme-io",
         "repo": "kikai",
-        "rev": "27023ef0161bfd83d764b693c3b0237390257a21",
+        "rev": "a69e9449b08039b424e09b1b7791561517cfdf9d",
         "type": "github"
       },
       "original": {
