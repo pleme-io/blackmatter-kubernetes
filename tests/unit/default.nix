@@ -1946,13 +1946,39 @@ in runTests [
         && cfg._computed.cleanStopTimeout == "180s")
     "a custom cleanStop.stopTimeout should reach the option + _computed surfaces")
 
-  (mkTest "cleanstop-awk-covers-all-mount-prefixes"
+  (mkTest "cleanstop-args-cover-all-mount-prefixes"
     (let c = (evalModule {
                enable = true;
                cleanStop.mountPrefixes = [ "/var/lib/kubelet" "/run/k3s" "/custom/mnt" ];
              }).services.blackmatter.k3s._computed;
-     in lib.hasInfix "^/var/lib/kubelet" c.cleanStopAwk
-        && lib.hasInfix "^/run/k3s" c.cleanStopAwk
-        && lib.hasInfix "^/custom/mnt" c.cleanStopAwk)
-    "the lazy-umount awk pattern should anchor every configured mount prefix")
+     in lib.elem "/var/lib/kubelet" c.cleanStopArgs
+        && lib.elem "/run/k3s" c.cleanStopArgs
+        && lib.elem "/custom/mnt" c.cleanStopArgs
+        && lib.elem "--mount-prefix" c.cleanStopArgs)
+    "the reaper argv should pass --mount-prefix for every configured mount prefix")
+
+  (mkTest "cleanstop-default-reap-workloads"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.cleanStop.reapWorkloads == true)
+    "cleanStop.reapWorkloads should default to true (kills the flock-CrashLoop class)")
+
+  (mkTest "cleanstop-default-cgroup-root"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.cleanStop.cgroupRoot == "/sys/fs/cgroup")
+    "cleanStop.cgroupRoot should default to the cgroup-v2 mount")
+
+  (mkTest "cleanstop-computed-reap-workloads"
+    (let c = (evalModule { enable = true; }).services.blackmatter.k3s._computed;
+     in c.cleanStopReapWorkloads == true
+        && c.cleanStopCgroupRoot == "/sys/fs/cgroup"
+        && lib.elem "--cgroup-root" c.cleanStopArgs
+        && lib.elem "--reap-grace" c.cleanStopArgs)
+    "_computed should surface the workload-reap decision + render the reaper argv IFD-free")
+
+  (mkTest "cleanstop-reap-workloads-disablable"
+    (let c = (evalModule { enable = true; cleanStop.reapWorkloads = false; })
+              .services.blackmatter.k3s._computed;
+     in c.cleanStopReapWorkloads == false
+        && lib.elem "--no-reap-workloads" c.cleanStopArgs)
+    "cleanStop.reapWorkloads=false should pass --no-reap-workloads (back-compat: containerd/shim reap only)")
 ]

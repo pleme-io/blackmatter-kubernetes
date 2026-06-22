@@ -1,0 +1,15 @@
+[package]
+name = "k3s-clean-stop"
+version = "0.1.0"
+edition = "2021"
+description = "Typed k3s ExecStopPost reaper — reaps orphaned containerd/shims + pod-workload cgroups + lazily unmounts the kubelet tree, so the next start finds released locks and no half-torn-down snapshot. Pure syscalls, no shell, no deps."
+
+[[bin]]
+name = "k3s-clean-stop"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

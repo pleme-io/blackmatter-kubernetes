@@ -169,33 +169,29 @@ let
   # trade: the corruption is the larger, recurring harm, and pods are recreated
   # cleanly on the next start anyway.
   #
-  # NO-SHELL note: the reaper is a `pkgs.writeShellScript` interim. The
-  # destination is a typed `seibi k3s-clean-stop` (or `kikai`) subcommand
-  # invoked from the unit — see the per-repo CLAUDE/skip-shell follow-up.
-  cleanStopMountAwk =
-    "$2 ~ "
-    + "\""
-    + concatStringsSep "|" (map (p: "^" + p) cfg.cleanStop.mountPrefixes)
-    + "\""
-    + " {print $2}";
-  cleanStopScript = pkgs.writeShellScript "k3s-clean-stop-post" ''
-    set -u
-    export PATH=${lib.makeBinPath [ pkgs.procps pkgs.util-linux pkgs.gawk pkgs.coreutils ]}
-    # 1. Reap the orphaned containerd + its task-shims (KillMode=process left
-    #    them running after the main k3s process was killed). A k3s node runs
-    #    exactly one containerd (k3s's own), so -x containerd is unambiguous.
-    pkill -TERM -x containerd          2>/dev/null || true
-    pkill -TERM -f 'containerd-shim'   2>/dev/null || true
-    sleep ${toString cfg.cleanStop.reapGraceSeconds}
-    pkill -KILL -x containerd          2>/dev/null || true
-    pkill -KILL -f 'containerd-shim'   2>/dev/null || true
-    # 2. Lazily unmount the kubelet + containerd-agent mount tree, deepest
-    #    first, so the next start re-creates a clean snapshot tree. Lazy +
-    #    `|| true` guarantee this never blocks or fails the stop.
-    awk '${cleanStopMountAwk}' /proc/self/mounts \
-      | sort -r | xargs -r -n1 umount -lf 2>/dev/null || true
-    exit 0
-  '';
+  # The reaper is a typed Rust binary (module/nixos/k3s/clean-stop) — pure
+  # syscalls + /proc + /sys reads, no shell, no PATH deps, unit-tested. It is
+  # built here with stock rustPlatform (std-only, zero crate deps) so the
+  # module stays self-contained: no overlay, no cross-repo wiring. It also
+  # reaps the orphaned pod WORKLOAD processes (re-parented to init, still
+  # holding their data-dir POSIX flocks) via the kubepods cgroup.kill — making
+  # the flock-CrashLoop-after-bounce class (rio vmsingle/victoria-logs/vector,
+  # 2026-06-22) unrepresentable alongside the snapshot-corruption class.
+  cleanStopBin = pkgs.rustPlatform.buildRustPackage {
+    pname = "k3s-clean-stop";
+    version = "0.1.0";
+    src = ./clean-stop;
+    cargoLock.lockFile = ./clean-stop/Cargo.lock;
+  };
+
+  # Rendered ExecStopPost argv (also surfaced IFD-free via _computed for tests).
+  cleanStopArgs =
+    [ "--reap-grace" (toString cfg.cleanStop.reapGraceSeconds)
+      "--cgroup-root" cfg.cleanStop.cgroupRoot ]
+    ++ optionals (!cfg.cleanStop.reapWorkloads) [ "--no-reap-workloads" ]
+    ++ concatMap (p: [ "--mount-prefix" p ]) cfg.cleanStop.mountPrefixes;
+  cleanStopExec =
+    "${cleanStopBin}/bin/k3s-clean-stop " + concatStringsSep " " cleanStopArgs;
 
 in {
   options.services.blackmatter.k3s = {
@@ -587,7 +583,9 @@ in {
         cleanStopEnabled = cfg.cleanStop.enable;
         cleanStopTimeout = cfg.cleanStop.stopTimeout;
         cleanStopMountPrefixes = cfg.cleanStop.mountPrefixes;
-        cleanStopAwk = cleanStopMountAwk;
+        cleanStopReapWorkloads = cfg.cleanStop.reapWorkloads;
+        cleanStopCgroupRoot = cfg.cleanStop.cgroupRoot;
+        cleanStopArgs = cleanStopArgs;
       };
       description = "Read-only computed flag lists for test introspection";
     };
@@ -615,7 +613,7 @@ in {
     # clean tree with no half-torn-down overlay snapshot to race on. This
     # eliminates the recurring containerd-snapshot-corruption class on
     # EVERY k3s node (server and agent), not just the busiest one. See the
-    # cleanStopScript comment above for the full root-cause rationale.
+    # cleanStopBin comment above for the full root-cause rationale.
     cleanStop = {
       enable = mkOption {
         type = types.bool;
@@ -660,6 +658,36 @@ in {
           first) after reaping containerd. These are the kubelet +
           containerd-agent mount trees whose half-torn-down overlay
           snapshots cause the ENOENT race on the next start.
+        '';
+      };
+
+      reapWorkloads = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Also SIGKILL the kubepods cgroup subtree on k3s stop, so orphaned
+          container WORKLOAD processes cannot survive the stop. Killing
+          containerd + its shims does not kill the pod processes the shims
+          managed — they re-parent to init and keep running, still holding
+          their data-dir POSIX flocks, so the next start's fresh pod
+          CrashLoops with "resource temporarily unavailable" on its lock.
+          cgroup v2: one write to each kubepods `cgroup.kill` recursively
+          SIGKILLs that pod-cgroup subtree, releasing every lock. This makes
+          the flock-CrashLoop-after-bounce class unrepresentable; it extends
+          cleanStop's existing trade (pods recreate on the next start anyway).
+          Set false to keep only the containerd/shim reap.
+        '';
+      };
+
+      cgroupRoot = mkOption {
+        type = types.str;
+        default = "/sys/fs/cgroup";
+        description = ''
+          cgroup-v2 unified-hierarchy mount root the reaper scans for
+          top-level kubepods cgroups (any child whose name starts with
+          `kubepods` and has a `cgroup.kill`) when reapWorkloads is set. The
+          reaper writes `1` to each such `cgroup.kill`, recursively SIGKILLing
+          that pod-cgroup subtree. The default is the NixOS cgroup-v2 mount.
         '';
       };
     };
@@ -788,10 +816,11 @@ in {
           ExecStartPost = nvidiaPostStartScript;
         }
         // optionalAttrs cfg.cleanStop.enable {
-          # Snapshot-corruption-free stop — reap orphaned containerd+shims +
-          # lazily unmount the kubelet/agent tree (see cleanStopScript above).
+          # Snapshot-corruption-free + flock-free stop — the typed reaper binary
+          # reaps containerd+shims + pod-workload cgroups + unmounts the tree
+          # (see the cleanStopBin comment above).
           TimeoutStopSec = cfg.cleanStop.stopTimeout;
-          ExecStopPost = cleanStopScript;
+          ExecStopPost = cleanStopExec;
         };
       };
 
@@ -840,7 +869,7 @@ in {
           # Same snapshot-corruption-free stop as k3s.service — agent nodes
           # run the same embedded containerd + shims under KillMode=process.
           TimeoutStopSec = cfg.cleanStop.stopTimeout;
-          ExecStopPost = cleanStopScript;
+          ExecStopPost = cleanStopExec;
         };
       };
 
