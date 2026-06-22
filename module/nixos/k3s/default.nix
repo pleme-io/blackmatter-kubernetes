@@ -146,6 +146,57 @@ let
     echo "NVIDIA runtime configuration complete"
   '';
 
+  # ── Clean-stop reaper (removes the snapshot-corruption class at its source) ──
+  # ROOT CAUSE: the upstream k3s unit ships `KillMode=process` +
+  # `TimeoutStopUSec=10s` (we set KillMode=process above for the same reason
+  # upstream does — k3s manages its embedded containerd + task-shims as
+  # cgroup-delegated children, so systemd must NOT kill the whole cgroup).
+  # The consequence: every deliberate k3s restart (a daily proactive restart,
+  # a version bump, an explicit `systemctl restart k3s`) kills ONLY the k3s
+  # process and ORPHANS the embedded containerd + its task-shims (a busy node
+  # leaves ~hundreds). The orphans tear down the shared base-layer overlay
+  # snapshot mounts while the freshly-started containerd races to re-mount the
+  # SAME snapshots → a snapshot can be mounted mid-teardown → ENOENT. THAT
+  # ENOENT race IS the "recurring containerd snapshot corruption". It exists on
+  # EVERY k3s node (the upstream unit design), amplified by an overlayfs-on-ZFS
+  # backing fs but present on any fs.
+  #
+  # Fix: give the unit `stopTimeout` to stop, and an ExecStopPost that — AFTER
+  # the main k3s process exits, with containerd+shims now orphaned — reaps them
+  # and lazily unmounts the agent/kubelet mount tree, so the NEXT start finds a
+  # clean tree with no half-torn-down snapshot to race on. This trades graceful
+  # pod-survival-across-a-k3s-restart for ZERO snapshot corruption — the right
+  # trade: the corruption is the larger, recurring harm, and pods are recreated
+  # cleanly on the next start anyway.
+  #
+  # NO-SHELL note: the reaper is a `pkgs.writeShellScript` interim. The
+  # destination is a typed `seibi k3s-clean-stop` (or `kikai`) subcommand
+  # invoked from the unit — see the per-repo CLAUDE/skip-shell follow-up.
+  cleanStopMountAwk =
+    "$2 ~ "
+    + "\""
+    + concatStringsSep "|" (map (p: "^" + p) cfg.cleanStop.mountPrefixes)
+    + "\""
+    + " {print $2}";
+  cleanStopScript = pkgs.writeShellScript "k3s-clean-stop-post" ''
+    set -u
+    export PATH=${lib.makeBinPath [ pkgs.procps pkgs.util-linux pkgs.gawk pkgs.coreutils ]}
+    # 1. Reap the orphaned containerd + its task-shims (KillMode=process left
+    #    them running after the main k3s process was killed). A k3s node runs
+    #    exactly one containerd (k3s's own), so -x containerd is unambiguous.
+    pkill -TERM -x containerd          2>/dev/null || true
+    pkill -TERM -f 'containerd-shim'   2>/dev/null || true
+    sleep ${toString cfg.cleanStop.reapGraceSeconds}
+    pkill -KILL -x containerd          2>/dev/null || true
+    pkill -KILL -f 'containerd-shim'   2>/dev/null || true
+    # 2. Lazily unmount the kubelet + containerd-agent mount tree, deepest
+    #    first, so the next start re-creates a clean snapshot tree. Lazy +
+    #    `|| true` guarantee this never blocks or fails the stop.
+    awk '${cleanStopMountAwk}' /proc/self/mounts \
+      | sort -r | xargs -r -n1 umount -lf 2>/dev/null || true
+    exit 0
+  '';
+
 in {
   options.services.blackmatter.k3s = {
     enable = mkEnableOption "k3s Kubernetes distribution";
@@ -531,6 +582,12 @@ in {
         hardeningFlags = hardeningFlags;
         serverSentinelPaths = serverSentinelPaths;
         agentSentinelPaths = agentSentinelPaths;
+        # Clean-stop decision, surfaced IFD-free so unit tests can assert
+        # the reaper is wired without forcing the writeShellScript / package.
+        cleanStopEnabled = cfg.cleanStop.enable;
+        cleanStopTimeout = cfg.cleanStop.stopTimeout;
+        cleanStopMountPrefixes = cfg.cleanStop.mountPrefixes;
+        cleanStopAwk = cleanStopMountAwk;
       };
       description = "Read-only computed flag lists for test introspection";
     };
@@ -548,6 +605,62 @@ in {
         type = types.bool;
         default = false;
         description = "Enable graceful node shutdown";
+      };
+    };
+
+    # ── Clean stop (snapshot-corruption-free restart) ──────────────────
+    # Default-ON. Reaps the orphaned containerd + task-shims that
+    # KillMode=process leaves behind on every k3s stop, and lazily
+    # unmounts the kubelet/agent mount tree, so the next start finds a
+    # clean tree with no half-torn-down overlay snapshot to race on. This
+    # eliminates the recurring containerd-snapshot-corruption class on
+    # EVERY k3s node (server and agent), not just the busiest one. See the
+    # cleanStopScript comment above for the full root-cause rationale.
+    cleanStop = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Reap orphaned containerd + task-shims and lazily unmount the
+          kubelet/agent mount tree on k3s stop, eliminating the
+          KillMode=process snapshot-corruption race. When true, sets
+          serviceConfig.TimeoutStopSec = stopTimeout and adds an
+          ExecStopPost reaper to both k3s.service and (if agent.enable)
+          k3s-agent.service. Set false to fall back to the bare upstream
+          stop behaviour.
+        '';
+      };
+
+      stopTimeout = mkOption {
+        type = types.str;
+        default = "120s";
+        description = ''
+          serviceConfig.TimeoutStopSec for the k3s unit while cleanStop is
+          enabled. Must exceed reapGraceSeconds + the lazy-umount sweep so
+          the reaper completes before systemd SIGKILLs the stop job. The
+          upstream default (10s) is too short for a busy node's shim reap.
+        '';
+      };
+
+      reapGraceSeconds = mkOption {
+        type = types.ints.unsigned;
+        default = 3;
+        description = ''
+          Seconds to wait between the TERM and KILL passes over the
+          orphaned containerd + shims, giving them a chance to exit
+          cleanly before the hard kill.
+        '';
+      };
+
+      mountPrefixes = mkOption {
+        type = types.listOf types.str;
+        default = [ "/var/lib/kubelet" "/run/k3s" "/var/lib/rancher/k3s/agent" ];
+        description = ''
+          Mount-point path prefixes the reaper lazily unmounts (deepest
+          first) after reaping containerd. These are the kubelet +
+          containerd-agent mount trees whose half-torn-down overlay
+          snapshots cause the ENOENT race on the next start.
+        '';
       };
     };
   };
@@ -673,6 +786,12 @@ in {
         }
         // optionalAttrs cfg.nvidia.enable {
           ExecStartPost = nvidiaPostStartScript;
+        }
+        // optionalAttrs cfg.cleanStop.enable {
+          # Snapshot-corruption-free stop — reap orphaned containerd+shims +
+          # lazily unmount the kubelet/agent tree (see cleanStopScript above).
+          TimeoutStopSec = cfg.cleanStop.stopTimeout;
+          ExecStopPost = cleanStopScript;
         };
       };
 
@@ -716,6 +835,12 @@ in {
         }
         // optionalAttrs (cfg.environmentFile != null) {
           EnvironmentFile = cfg.environmentFile;
+        }
+        // optionalAttrs cfg.cleanStop.enable {
+          # Same snapshot-corruption-free stop as k3s.service — agent nodes
+          # run the same embedded containerd + shims under KillMode=process.
+          TimeoutStopSec = cfg.cleanStop.stopTimeout;
+          ExecStopPost = cleanStopScript;
         };
       };
 

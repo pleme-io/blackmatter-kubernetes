@@ -1895,4 +1895,64 @@ in runTests [
          }).assertions;
      in lib.all (a: a.assertion) asserts)
     "FedRAMP-shaped config with all 6 role sentinels should pass every assertion")
+
+  # ── Clean-stop (snapshot-corruption-free restart) tests ────────────────
+  # The reaper eliminates the KillMode=process orphaned-shim race on EVERY
+  # k3s node (server + agent). These tests are IFD-free and follow the
+  # harness contract (don't force config paths that reference real packages):
+  # the cleanStop DECISION is read off the option values + the `_computed`
+  # internal option, never forcing the writeShellScript / package derivation
+  # that lives in serviceConfig.ExecStopPost.
+
+  (mkTest "cleanstop-default-enabled"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.cleanStop.enable == true)
+    "cleanStop should be enabled by default (fleet-wide snapshot-corruption fix)")
+
+  (mkTest "cleanstop-default-timeout-120s"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.cleanStop.stopTimeout == "120s")
+    "cleanStop.stopTimeout should default to 120s")
+
+  (mkTest "cleanstop-default-reap-grace"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.cleanStop.reapGraceSeconds == 3)
+    "cleanStop.reapGraceSeconds should default to 3")
+
+  (mkTest "cleanstop-default-mount-prefixes"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.cleanStop.mountPrefixes
+        == [ "/var/lib/kubelet" "/run/k3s" "/var/lib/rancher/k3s/agent" ])
+    "cleanStop.mountPrefixes should default to the kubelet/agent mount tree")
+
+  (mkTest "cleanstop-computed-surface-enabled"
+    (let c = (evalModule { enable = true; })
+              .services.blackmatter.k3s._computed;
+     in c.cleanStopEnabled == true
+        && c.cleanStopTimeout == "120s"
+        && lib.elem "/var/lib/kubelet" c.cleanStopMountPrefixes)
+    "_computed should surface the cleanStop decision IFD-free (the reaper IS wired)")
+
+  (mkTest "cleanstop-disabled-computed-surface"
+    (let c = (evalModule { enable = true; cleanStop.enable = false; })
+              .services.blackmatter.k3s._computed;
+     in c.cleanStopEnabled == false)
+    "cleanStop.enable=false should disable the reaper (back-compat — bare upstream stop)")
+
+  (mkTest "cleanstop-custom-timeout-propagates"
+    (let cfg = (evalModule { enable = true; cleanStop.stopTimeout = "180s"; })
+                .services.blackmatter.k3s;
+     in cfg.cleanStop.stopTimeout == "180s"
+        && cfg._computed.cleanStopTimeout == "180s")
+    "a custom cleanStop.stopTimeout should reach the option + _computed surfaces")
+
+  (mkTest "cleanstop-awk-covers-all-mount-prefixes"
+    (let c = (evalModule {
+               enable = true;
+               cleanStop.mountPrefixes = [ "/var/lib/kubelet" "/run/k3s" "/custom/mnt" ];
+             }).services.blackmatter.k3s._computed;
+     in lib.hasInfix "^/var/lib/kubelet" c.cleanStopAwk
+        && lib.hasInfix "^/run/k3s" c.cleanStopAwk
+        && lib.hasInfix "^/custom/mnt" c.cleanStopAwk)
+    "the lazy-umount awk pattern should anchor every configured mount prefix")
 ]
