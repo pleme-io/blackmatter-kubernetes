@@ -59,22 +59,26 @@ let
 
   hardeningFlags = cisKubeletFlags ++ auditApiserverFlags;
 
-  # ── Containerd-corruption guard: kubelet flags ─────────────────────
-  # ROOT CAUSE (fleet-wide, every k3s node): under imagefs pressure the
-  # kubelet's emergency image-GC deletes in-use overlayfs base-layer
-  # snapshots out from under the snapshotter metadata → the recurring
-  # cluster-wide CreateContainerError / "stat parent: no such file"
-  # corruption (rio, repeatedly through 2026-06). Disabling the
-  # destructive GC (high-threshold=100 → it NEVER fires) makes that vector
-  # unrepresentable; eviction-hard imagefs (operator-set) still defends a
-  # true disk-full by evicting PODS, which never deletes image layers.
-  # The companion start-race guard is the RequiresMountsFor below. Kubelet
-  # flags apply to BOTH server and agent nodes.
-  containerdGuardKubeletFlags =
-    optionals (cfg.containerdGuard.enable && cfg.containerdGuard.disableDestructiveImageGc) [
-      "--kubelet-arg=image-gc-high-threshold-percent=100"
-      "--kubelet-arg=image-gc-low-threshold-percent=99"
-    ];
+  # ── Containerd-corruption guard: NO kubelet flags (deliberate) ──────
+  # An earlier revision added `--kubelet-arg=image-gc-{high,low}-threshold-
+  # percent=…` here to "disable the destructive image-GC". That was WRONG on
+  # two counts and is intentionally NOT present:
+  #   1. INVALID FLAG — on k3s 1.34 the kubelet image-GC thresholds are
+  #      KubeletConfiguration FIELDS (imageGCHighThresholdPercent), NOT CLI
+  #      flags. `--kubelet-arg=image-gc-high-threshold-percent=100` makes the
+  #      kubelet exit with "unknown flag", k3s treats that as a stop, and the
+  #      whole control plane crash-loops (rio: ×1804 restarts / ~24h apiserver
+  #      outage, 2026-06-29). A `--kubelet-arg` MUST be a real kubelet flag.
+  #   2. UNNECESSARY — the in-use-snapshot-deletion vector it targeted was an
+  #      ext4-era bug; it is already closed by the containerd-store ext4→ZFS
+  #      (pool/k3s) migration + the proactive image-prune timer. Default
+  #      image-GC (85%) is the SAFE, correct behavior on ZFS; disabling it
+  #      (threshold=100 → never GC) would instead let the disk fill until pods
+  #      get evicted. So the guard does NOT touch image-GC at all.
+  # The guard is purely the RequiresMountsFor start-race fix below — the one
+  # corruption vector that is NOT already closed and is fixed with a VALID,
+  # non-control-plane-risking mechanism.
+  containerdGuardKubeletFlags = [ ];
 
   serverFlags =
     disableFlags
@@ -99,7 +103,6 @@ let
         pkgs.writeText "containerd-config-template.toml" cfg.containerdConfigTemplate
       }"
     ++ hardeningFlags
-    ++ containerdGuardKubeletFlags
     ++ cfg.extraFlags;
 
   # Agents only accept kubelet-level hardening (apiserver flags are
@@ -115,7 +118,6 @@ let
     ++ optional (cfg.nodeIP != null) "--node-ip ${cfg.nodeIP}"
     ++ optional (cfg.configPath != null) "--config ${cfg.configPath}"
     ++ cisKubeletFlags
-    ++ containerdGuardKubeletFlags
     ++ cfg.extraFlags;
 
   # ── Containerd-storage start-race guard: RequiresMountsFor ──────────
@@ -620,10 +622,10 @@ in {
         cleanStopCgroupRoot = cfg.cleanStop.cgroupRoot;
         cleanStopArgs = cleanStopArgs;
         # Containerd-corruption guard, surfaced IFD-free so unit tests can
-        # assert the kubelet GC-disable + RequiresMountsFor wiring without
-        # forcing package evaluation.
+        # assert the RequiresMountsFor wiring + that it adds NO kubelet flags
+        # (the invalid image-gc flags are gone) without forcing package eval.
         containerdGuardEnabled = cfg.containerdGuard.enable;
-        containerdGuardKubeletFlags = containerdGuardKubeletFlags;
+        containerdGuardKubeletFlags = containerdGuardKubeletFlags; # always [] — the guard adds no kubelet flags
         containerdGuardUnitConfig = containerdGuardUnitConfig;
         containerdGuardMounts = cfg.containerdGuard.containerdStorageMounts;
         serverFlags = serverFlags;
@@ -734,37 +736,32 @@ in {
       };
     };
 
-    # ── Containerd-corruption guard (snapshot-corruption-free runtime) ──
-    # Default-ON. Two declarative root-cause fixes for the recurring
-    # overlayfs-snapshotter corruption (cluster-wide CreateContainerError /
-    # "stat parent: no such file"), applied on EVERY k3s node:
-    #   1. disableDestructiveImageGc — kubelet image-gc-high-threshold=100 so
-    #      its emergency GC never deletes in-use base-layer snapshots.
-    #   2. requireContainerdStorageMount — RequiresMountsFor the containerd
-    #      store so k3s never starts before that mount is ready (the bind/ZFS
-    #      start-race). See the containerdGuardKubeletFlags comment above.
-    # Sibling of cleanStop (which closes the KillMode=process teardown race);
-    # together they make the whole snapshot-corruption class unrepresentable.
+    # ── Containerd-corruption guard (storage start-race) ───────────────
+    # Default-ON. ONE declarative root-cause fix, applied on EVERY k3s node:
+    # requireContainerdStorageMount — RequiresMountsFor the containerd store so
+    # k3s (and its embedded containerd) never starts before that mount is ready,
+    # closing the bind/ZFS start-race that splits the snapshotter view →
+    # "stat parent: no such file" (rio 2026-06-29).
+    #
+    # It does NOT touch kubelet image-GC. An earlier revision had a
+    # `disableDestructiveImageGc` knob that appended
+    # `--kubelet-arg=image-gc-{high,low}-threshold-percent=…` — REMOVED because
+    # (1) those are INVALID kubelet CLI flags on k3s 1.34 (they are
+    # KubeletConfiguration fields), so the kubelet refused to start and the
+    # control plane crash-looped (rio ×1804 / ~24h outage), and (2) the
+    # in-use-snapshot-deletion vector was an ext4-era bug already closed by the
+    # containerd-store ZFS migration + the proactive image-prune timer — default
+    # image-GC (85%) is the SAFE behavior. See the containerdGuardKubeletFlags
+    # comment above. Sibling of cleanStop (KillMode=process teardown race).
     containerdGuard = {
       enable = mkOption {
         type = types.bool;
         default = true;
         description = ''
-          Master toggle for the containerd-corruption guard (image-GC
-          disable + storage-mount ordering). Default-on fleet-wide. Set
-          false to fall back to the corruption-prone upstream defaults.
-        '';
-      };
-
-      disableDestructiveImageGc = mkOption {
-        type = types.bool;
-        default = true;
-        description = ''
-          Append --kubelet-arg=image-gc-high-threshold-percent=100 (+ low=99)
-          so the kubelet's emergency image-GC NEVER fires — it is the GC that
-          deletes in-use overlayfs base-layer snapshots under imagefs pressure,
-          the documented root cause. Disk-full is still defended by the
-          operator's eviction-hard imagefs line (evicts pods, not layers).
+          Master toggle for the containerd-corruption guard (containerd-store
+          mount ordering via RequiresMountsFor). Default-on fleet-wide. Set
+          false to fall back to the start-race-prone upstream default. Does NOT
+          alter kubelet image-GC (default 85% is safe; see module comment).
         '';
       };
 

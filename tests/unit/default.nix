@@ -1988,19 +1988,23 @@ in runTests [
   (mkTest "containerd-guard-default-enabled"
     (let cfg = (evalModule {}).services.blackmatter.k3s;
      in cfg.containerdGuard.enable == true)
-    "containerdGuard should be enabled by default (fleet-wide snapshot-corruption prevention)")
+    "containerdGuard should be enabled by default (fleet-wide start-race prevention)")
 
-  (mkTest "containerd-guard-disables-destructive-image-gc"
+  (mkTest "containerd-guard-adds-no-kubelet-flags"
     (let c = (evalModule { enable = true; }).services.blackmatter.k3s._computed;
-     in lib.elem "--kubelet-arg=image-gc-high-threshold-percent=100" c.containerdGuardKubeletFlags
-        && lib.elem "--kubelet-arg=image-gc-low-threshold-percent=99" c.containerdGuardKubeletFlags)
-    "the guard should disable the destructive kubelet image-GC (high-threshold=100)")
+     in c.containerdGuardKubeletFlags == [])
+    "the guard must add NO kubelet flags (the invalid image-gc-*-threshold-percent flags are removed)")
 
-  (mkTest "containerd-guard-kubelet-flags-in-server-and-agent"
+  # REGRESSION GUARD: the invalid `--kubelet-arg=image-gc-*-threshold-percent`
+  # flags crash-looped rio's control plane for ~24h (k3s 1.34 — they are
+  # KubeletConfiguration FIELDS, not CLI flags). They must NEVER reach the
+  # server or agent flag lists again.
+  (mkTest "containerd-guard-no-invalid-image-gc-flags-in-server-or-agent"
     (let c = (evalModule { enable = true; agent.enable = true; }).services.blackmatter.k3s._computed;
-     in lib.elem "--kubelet-arg=image-gc-high-threshold-percent=100" c.serverFlags
-        && lib.elem "--kubelet-arg=image-gc-high-threshold-percent=100" c.agentFlags)
-    "the image-GC-disable flags should reach BOTH server and agent kubelet flag lists")
+         bad = f: lib.any (x: lib.hasInfix "image-gc-high-threshold-percent" x
+                              || lib.hasInfix "image-gc-low-threshold-percent" x) f;
+     in !(bad c.serverFlags) && !(bad c.agentFlags))
+    "the invalid image-gc-*-threshold-percent kubelet flags must NOT appear in server or agent flags (24h-outage regression)")
 
   (mkTest "containerd-guard-requires-mounts-for-default"
     (let c = (evalModule {}).services.blackmatter.k3s._computed;
@@ -2023,5 +2027,5 @@ in runTests [
      in c.containerdGuardEnabled == false
         && c.containerdGuardKubeletFlags == []
         && c.containerdGuardUnitConfig == {})
-    "containerdGuard.enable=false should drop both the image-GC flags and RequiresMountsFor (bare upstream)")
+    "containerdGuard.enable=false should drop the RequiresMountsFor (bare upstream; kubelet flags already none)")
 ]
