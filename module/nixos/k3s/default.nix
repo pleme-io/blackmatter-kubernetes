@@ -59,6 +59,23 @@ let
 
   hardeningFlags = cisKubeletFlags ++ auditApiserverFlags;
 
+  # ── Containerd-corruption guard: kubelet flags ─────────────────────
+  # ROOT CAUSE (fleet-wide, every k3s node): under imagefs pressure the
+  # kubelet's emergency image-GC deletes in-use overlayfs base-layer
+  # snapshots out from under the snapshotter metadata → the recurring
+  # cluster-wide CreateContainerError / "stat parent: no such file"
+  # corruption (rio, repeatedly through 2026-06). Disabling the
+  # destructive GC (high-threshold=100 → it NEVER fires) makes that vector
+  # unrepresentable; eviction-hard imagefs (operator-set) still defends a
+  # true disk-full by evicting PODS, which never deletes image layers.
+  # The companion start-race guard is the RequiresMountsFor below. Kubelet
+  # flags apply to BOTH server and agent nodes.
+  containerdGuardKubeletFlags =
+    optionals (cfg.containerdGuard.enable && cfg.containerdGuard.disableDestructiveImageGc) [
+      "--kubelet-arg=image-gc-high-threshold-percent=100"
+      "--kubelet-arg=image-gc-low-threshold-percent=99"
+    ];
+
   serverFlags =
     disableFlags
     ++ [ "--cluster-cidr ${cfg.clusterCIDR}" ]
@@ -82,6 +99,7 @@ let
         pkgs.writeText "containerd-config-template.toml" cfg.containerdConfigTemplate
       }"
     ++ hardeningFlags
+    ++ containerdGuardKubeletFlags
     ++ cfg.extraFlags;
 
   # Agents only accept kubelet-level hardening (apiserver flags are
@@ -97,7 +115,22 @@ let
     ++ optional (cfg.nodeIP != null) "--node-ip ${cfg.nodeIP}"
     ++ optional (cfg.configPath != null) "--config ${cfg.configPath}"
     ++ cisKubeletFlags
+    ++ containerdGuardKubeletFlags
     ++ cfg.extraFlags;
+
+  # ── Containerd-storage start-race guard: RequiresMountsFor ──────────
+  # ROOT CAUSE (companion to the image-GC vector above): when the
+  # containerd data dir is a separate/bind/ZFS mount, a k3s restart can
+  # start the embedded containerd BEFORE that mount is ready (a `nofail`
+  # bind, an async ZFS import), so containerd initializes against an empty
+  # dir and the snapshotter's view splits → the same "stat parent" ENOENT
+  # corruption (rio, 2026-06-29, on a restart at 2% imagefs). RequiresMountsFor
+  # makes systemd hold k3s until the containerd store is mounted. Set via
+  # mkDefault so a node may still override per-host (rio adds its ZFS path).
+  containerdGuardUnitConfig =
+    optionalAttrs
+      (cfg.containerdGuard.enable && cfg.containerdGuard.requireContainerdStorageMount)
+      { RequiresMountsFor = mkDefault cfg.containerdGuard.containerdStorageMounts; };
 
   # ── Role sentinel list helpers (for ConditionPathExists OR-semantics) ──
   # When the same condition is specified multiple times, systemd treats
@@ -586,6 +619,15 @@ in {
         cleanStopReapWorkloads = cfg.cleanStop.reapWorkloads;
         cleanStopCgroupRoot = cfg.cleanStop.cgroupRoot;
         cleanStopArgs = cleanStopArgs;
+        # Containerd-corruption guard, surfaced IFD-free so unit tests can
+        # assert the kubelet GC-disable + RequiresMountsFor wiring without
+        # forcing package evaluation.
+        containerdGuardEnabled = cfg.containerdGuard.enable;
+        containerdGuardKubeletFlags = containerdGuardKubeletFlags;
+        containerdGuardUnitConfig = containerdGuardUnitConfig;
+        containerdGuardMounts = cfg.containerdGuard.containerdStorageMounts;
+        serverFlags = serverFlags;
+        agentFlags = agentFlags;
       };
       description = "Read-only computed flag lists for test introspection";
     };
@@ -691,6 +733,67 @@ in {
         '';
       };
     };
+
+    # ── Containerd-corruption guard (snapshot-corruption-free runtime) ──
+    # Default-ON. Two declarative root-cause fixes for the recurring
+    # overlayfs-snapshotter corruption (cluster-wide CreateContainerError /
+    # "stat parent: no such file"), applied on EVERY k3s node:
+    #   1. disableDestructiveImageGc — kubelet image-gc-high-threshold=100 so
+    #      its emergency GC never deletes in-use base-layer snapshots.
+    #   2. requireContainerdStorageMount — RequiresMountsFor the containerd
+    #      store so k3s never starts before that mount is ready (the bind/ZFS
+    #      start-race). See the containerdGuardKubeletFlags comment above.
+    # Sibling of cleanStop (which closes the KillMode=process teardown race);
+    # together they make the whole snapshot-corruption class unrepresentable.
+    containerdGuard = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Master toggle for the containerd-corruption guard (image-GC
+          disable + storage-mount ordering). Default-on fleet-wide. Set
+          false to fall back to the corruption-prone upstream defaults.
+        '';
+      };
+
+      disableDestructiveImageGc = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Append --kubelet-arg=image-gc-high-threshold-percent=100 (+ low=99)
+          so the kubelet's emergency image-GC NEVER fires — it is the GC that
+          deletes in-use overlayfs base-layer snapshots under imagefs pressure,
+          the documented root cause. Disk-full is still defended by the
+          operator's eviction-hard imagefs line (evicts pods, not layers).
+        '';
+      };
+
+      requireContainerdStorageMount = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Add RequiresMountsFor (mkDefault) for the containerd store to the
+          k3s/k3s-agent unit, so systemd holds k3s until that mount is ready —
+          closing the start-race where containerd inits on an empty dir before
+          a bind/ZFS mount lands. A node may override the paths per-host.
+        '';
+      };
+
+      containerdStorageMounts = mkOption {
+        type = types.listOf types.str;
+        default = [ "${cfg.dataDir}/agent/containerd" ];
+        defaultText = literalExpression ''[ "''${cfg.dataDir}/agent/containerd" ]'';
+        description = ''
+          Mount paths k3s must wait for (RequiresMountsFor) before start.
+          Defaults to the containerd agent store under dataDir. Nodes whose
+          store is bind-mounted from a separate volume (e.g. a ZFS dataset)
+          add that backing path here too.
+        '';
+        example = literalExpression ''
+          [ "/var/lib/rancher/k3s/agent/containerd" "/var/lib/k3s-storage" ]
+        '';
+      };
+    };
   };
 
   config = mkIf cfg.enable (mkMerge [
@@ -786,12 +889,15 @@ in {
         # After=kindling-init.service ensures sentinels are written
         # before conditions are evaluated. Requires= is NOT used so
         # non-kindling systems (no kindling-init.service) still work.
-        unitConfig =
-          if serverSentinelPaths != []
-          then mkRoleSentinelConditions serverSentinelPaths
-          else optionalAttrs (cfg.roleConditionPath != null) {
-            ConditionPathExists = cfg.roleConditionPath.server;
-          };
+        unitConfig = mkMerge [
+          (if serverSentinelPaths != []
+           then mkRoleSentinelConditions serverSentinelPaths
+           else optionalAttrs (cfg.roleConditionPath != null) {
+             ConditionPathExists = cfg.roleConditionPath.server;
+           })
+          # Containerd-storage start-race guard (RequiresMountsFor).
+          containerdGuardUnitConfig
+        ];
 
         path = [ cfg.package ];
 
@@ -839,12 +945,15 @@ in {
         wantedBy = optional
           (cfg.roleConditionPath != null || cfg.roleSentinels != {})
           "multi-user.target";
-        unitConfig =
-          if agentSentinelPaths != []
-          then mkRoleSentinelConditions agentSentinelPaths
-          else optionalAttrs (cfg.roleConditionPath != null) {
-            ConditionPathExists = cfg.roleConditionPath.agent;
-          };
+        unitConfig = mkMerge [
+          (if agentSentinelPaths != []
+           then mkRoleSentinelConditions agentSentinelPaths
+           else optionalAttrs (cfg.roleConditionPath != null) {
+             ConditionPathExists = cfg.roleConditionPath.agent;
+           })
+          # Containerd-storage start-race guard (RequiresMountsFor).
+          containerdGuardUnitConfig
+        ];
 
         path = [ cfg.package ];
 

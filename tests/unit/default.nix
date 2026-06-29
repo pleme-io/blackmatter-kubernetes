@@ -1981,4 +1981,47 @@ in runTests [
      in c.cleanStopReapWorkloads == false
         && lib.elem "--no-reap-workloads" c.cleanStopArgs)
     "cleanStop.reapWorkloads=false should pass --no-reap-workloads (back-compat: containerd/shim reap only)")
+
+  # ── Containerd-corruption guard (image-GC disable + storage-mount race) ──
+  # Sibling of cleanStop. Both decisions are read off option values + the
+  # `_computed` internal option, never forcing package evaluation.
+  (mkTest "containerd-guard-default-enabled"
+    (let cfg = (evalModule {}).services.blackmatter.k3s;
+     in cfg.containerdGuard.enable == true)
+    "containerdGuard should be enabled by default (fleet-wide snapshot-corruption prevention)")
+
+  (mkTest "containerd-guard-disables-destructive-image-gc"
+    (let c = (evalModule { enable = true; }).services.blackmatter.k3s._computed;
+     in lib.elem "--kubelet-arg=image-gc-high-threshold-percent=100" c.containerdGuardKubeletFlags
+        && lib.elem "--kubelet-arg=image-gc-low-threshold-percent=99" c.containerdGuardKubeletFlags)
+    "the guard should disable the destructive kubelet image-GC (high-threshold=100)")
+
+  (mkTest "containerd-guard-kubelet-flags-in-server-and-agent"
+    (let c = (evalModule { enable = true; agent.enable = true; }).services.blackmatter.k3s._computed;
+     in lib.elem "--kubelet-arg=image-gc-high-threshold-percent=100" c.serverFlags
+        && lib.elem "--kubelet-arg=image-gc-high-threshold-percent=100" c.agentFlags)
+    "the image-GC-disable flags should reach BOTH server and agent kubelet flag lists")
+
+  (mkTest "containerd-guard-requires-mounts-for-default"
+    (let c = (evalModule {}).services.blackmatter.k3s._computed;
+     in c.containerdGuardMounts == [ "/var/lib/rancher/k3s/agent/containerd" ]
+        && c.containerdGuardUnitConfig ? RequiresMountsFor)
+    "containerdGuard should RequiresMountsFor the default containerd store path")
+
+  (mkTest "containerd-guard-custom-storage-mounts"
+    (let c = (evalModule {
+               enable = true;
+               containerdGuard.containerdStorageMounts =
+                 [ "/var/lib/rancher/k3s/agent/containerd" "/var/lib/k3s-storage" ];
+             }).services.blackmatter.k3s._computed;
+     in lib.elem "/var/lib/k3s-storage" c.containerdGuardMounts)
+    "a node may add its ZFS/bind backing path to containerdStorageMounts (rio shape)")
+
+  (mkTest "containerd-guard-disablable"
+    (let c = (evalModule { enable = true; containerdGuard.enable = false; })
+              .services.blackmatter.k3s._computed;
+     in c.containerdGuardEnabled == false
+        && c.containerdGuardKubeletFlags == []
+        && c.containerdGuardUnitConfig == {})
+    "containerdGuard.enable=false should drop both the image-GC flags and RequiresMountsFor (bare upstream)")
 ]
